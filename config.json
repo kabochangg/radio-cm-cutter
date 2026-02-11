@@ -1,0 +1,16 @@
+{
+  "sample_rate": 16000,
+  "window_sec": 0.5,
+  "hop_sec": 0.25,
+
+  "baseline_window_sec": 150,
+  "start_delta_db": 1.5,
+  "end_delta_db": 1.0,
+  "min_cm_sec": 8,
+  "merge_gap_sec": 4.0,
+  "pad_sec": 0.2,
+
+  "min_score": 2.5,
+
+  "mp3_quality_q": 2
+}

@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.cache/
+*.wav
+*.csv
+*.html
+output*.mp3
+parts_*/
