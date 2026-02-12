@@ -6,13 +6,30 @@ cd /d "%~dp0"
 
 set "PY=%~dp0.venv\Scripts\python.exe"
 if not exist "%PY%" (
-  echo [ERROR] .venv が見つかりません。
-  echo まず PowerShell で次を実行してください:
-  echo   py -3.11 -m venv .venv
-  echo   .\.venv\Scripts\Activate.ps1
-  echo   pip install numpy scipy
-  pause
-  exit /b 1
+  echo [INFO] .venv が見つからないため自動セットアップします...
+  where py >nul 2>&1
+  if %errorlevel%==0 (
+    py -3 -m venv "%~dp0.venv"
+  ) else (
+    where python >nul 2>&1
+    if %errorlevel%==0 (
+      python -m venv "%~dp0.venv"
+    ) else (
+      echo [ERROR] Python が見つかりません。Python 3.x をインストールしてください。
+      pause
+      exit /b 1
+    )
+  )
+
+  if not exist "%PY%" (
+    echo [ERROR] .venv の作成に失敗しました。
+    pause
+    exit /b 1
+  )
+
+  echo [INFO] 依存ライブラリをインストールしています...
+  "%PY%" -m pip install --upgrade pip
+  "%PY%" -m pip install numpy scipy
 )
 
 set "FOLDER=%~1"
@@ -30,7 +47,28 @@ if "%FOLDER%"=="" (
 echo 対象フォルダ: "%FOLDER%"
 echo.
 
+where ffmpeg >nul 2>&1
+if not %errorlevel%==0 (
+  echo [ERROR] ffmpeg が見つかりません。PATH を確認してください。
+  pause
+  exit /b 1
+)
+
+where ffprobe >nul 2>&1
+if not %errorlevel%==0 (
+  echo [ERROR] ffprobe が見つかりません。PATH を確認してください。
+  pause
+  exit /b 1
+)
+
 "%PY%" "%~dp0radio_cm_cutter.py" process-folder "%FOLDER%"
+
+if not %errorlevel%==0 (
+  echo.
+  echo [ERROR] 処理中にエラーが発生しました。
+  pause
+  exit /b %errorlevel%
+)
 
 echo.
 echo 完了。出力は対象フォルダ内の cut_output にあります。

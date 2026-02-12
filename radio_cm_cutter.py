@@ -21,6 +21,23 @@ class Segment:
     score: float = 0.0  # 平均deltaなど
 
 
+def print_ui_header(title: str) -> None:
+    line = "=" * 64
+    print(f"\n{line}\n{title}\n{line}")
+
+
+def print_ui_step(message: str) -> None:
+    print(f"[STEP] {message}")
+
+
+def print_ui_ok(message: str) -> None:
+    print(f"[ OK ] {message}")
+
+
+def print_ui_ng(message: str) -> None:
+    print(f"[ NG ] {message}")
+
+
 def run(cmd: list[str]) -> None:
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if p.returncode != 0:
@@ -31,6 +48,16 @@ def run(cmd: list[str]) -> None:
             + p.stdout
             + "\n\nSTDERR:\n"
             + p.stderr
+        )
+
+
+def ensure_commands(commands: list[str]) -> None:
+    missing = [cmd for cmd in commands if shutil.which(cmd) is None]
+    if missing:
+        raise RuntimeError(
+            "Required command not found: "
+            + ", ".join(missing)
+            + "\nPlease install FFmpeg and ensure ffmpeg/ffprobe are on PATH."
         )
 
 
@@ -357,6 +384,11 @@ def cmd_cut(args: argparse.Namespace) -> None:
     print("Done.")
 
 def cmd_process_folder(args: argparse.Namespace) -> None:
+    print_ui_header("Radio CM Cutter - Folder Batch")
+    print_ui_step("Checking external tools...")
+    ensure_commands(["ffmpeg", "ffprobe"])
+    print_ui_ok("ffmpeg / ffprobe detected")
+
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
 
     folder = Path(args.folder)
@@ -380,6 +412,10 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
         print(f"No mp3 files found in: {folder}")
         return
 
+    print_ui_step(f"Target folder: {folder}")
+    print_ui_step(f"Detected files: {len(files)}")
+    print_ui_step(f"Output dir   : {out_dir}")
+
     min_score = float(cfg.get("min_score", 0.0))
 
     ok = 0
@@ -394,14 +430,14 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
             out_html = rep_dir / f"{stem}_report.html"
 
             if out_mp3.exists() and not args.overwrite:
-                print(f"[{i}/{len(files)}] SKIP (exists): {input_path.name}")
+                print(f"[{i:>3}/{len(files):>3}] SKIP  {input_path.name} (exists)")
                 continue
 
             # --- detect ---
             safe = f"{stem}_{abs(hash(str(input_path))) % 1000000}"
             wav_path = cache_dir / f"{safe}_16k_mono.wav"
 
-            print(f"[{i}/{len(files)}] Detect: {input_path.name}")
+            print(f"[{i:>3}/{len(files):>3}] RUN   {input_path.name}")
             decode_to_wav(input_path, wav_path, int(cfg["sample_rate"]))
             x = read_wav_pcm16(wav_path)
             sr = int(cfg["sample_rate"])
@@ -439,7 +475,7 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
 
             cm_sec = sum((s.end - s.start) for s in segments)
             total_cm += cm_sec
-            print(f"    segments={len(segments)} cm_sec={cm_sec:.1f}")
+            print(f"      -> segments={len(segments)} cm_sec={cm_sec:.1f}")
 
             # --- cut ---
             keep = complement_segments(ffprobe_duration(input_path), segments)
@@ -451,14 +487,22 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
                 keep_parts=bool(args.keep_parts),
             )
             ok += 1
+            print(f"      -> output={out_mp3.name}")
 
         except Exception as e:
             ng += 1
-            print(f"ERROR: {input_path} -> {e}")
+            print_ui_ng(f"{input_path.name} -> {e}")
 
-    print("\n=== Summary ===")
-    print(f"files={len(files)} ok={ok} ng={ng} total_cm_sec={total_cm:.1f}")
-    print(f"output: {out_dir}")
+    print_ui_header("Summary")
+    print(f"files       : {len(files)}")
+    print(f"success     : {ok}")
+    print(f"failed      : {ng}")
+    print(f"total_cm_sec: {total_cm:.1f}")
+    print(f"output      : {out_dir}")
+    if ng == 0:
+        print_ui_ok("Batch process completed")
+    else:
+        print_ui_ng("Batch process completed with errors")
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="radio_cm_cutter")
