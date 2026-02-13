@@ -8,11 +8,11 @@ set "PY=%~dp0.venv\Scripts\python.exe"
 if not exist "%PY%" (
   echo [INFO] .venv が見つからないため自動セットアップします...
   where py >nul 2>&1
-  if %errorlevel%==0 (
+  if not errorlevel 1 (
     py -3 -m venv "%~dp0.venv"
   ) else (
     where python >nul 2>&1
-    if %errorlevel%==0 (
+    if not errorlevel 1 (
       python -m venv "%~dp0.venv"
     ) else (
       echo [ERROR] Python が見つかりません。Python 3.x をインストールしてください。
