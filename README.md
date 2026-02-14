@@ -1,52 +1,152 @@
 # radio-cm-cutter
 
-MP3 音源から CM 区間を検出し、CM を除いた MP3 をまとめて出力するツールです。
-
-## UI 改善ポイント
-
-- `process-folder` 実行時に、見出し・ステップ・結果を見やすく表示します。
-- ファイルごとの進捗表示を揃え、`SKIP / RUN / NG` が判別しやすくなっています。
-- 最後に成功件数・失敗件数・合計 CM 秒数をまとめて表示します。
+MP3音源からCM区間を検出し、CMを除いたMP3を出力するツールです。  
+従来の音量差ルール（ヒューリスティック）に加えて、ラベル付きデータから学習するML検出を使えるようになりました。
 
 ## 必要環境
 
-- Python 3.x
-- FFmpeg（`ffmpeg` / `ffprobe` が PATH に通っていること）
-- 依存ライブラリ: `numpy`, `scipy`
+- Python 3.11 推奨
+- FFmpeg（`ffmpeg` / `ffprobe` がPATHに通っていること）
+- 依存ライブラリ
+  - `numpy`
+  - `scipy`
+  - `scikit-learn`
 
-> 追加ライブラリは増やしていません。
+---
 
-## 使い方（Windows かんたん実行）
+## できること
 
-### 1) `run_folder.bat` を実行
+- `detect`: CM区間検出（**モデルがあればML優先**、無ければ従来ルール）
+- `detect-ml`: MLモデル必須でCM区間検出
+- `cut`: 検出CSVを使ってCM部分を除去
+- `process-folder`: フォルダ内MP3を一括検出＆カット（モデルがあれば自動使用）
+- `init-label-template`: 学習ラベルのテンプレCSV生成
+- `train`: ラベルCSVからモデル学習
 
-- ダブルクリック、または `run_folder.bat "対象フォルダ"` で実行できます。
-- 引数なし実行時はフォルダ選択ダイアログが開きます。
+---
 
-### 2) 自動セットアップ
+## 学習データの形式（`data/labels/*.csv`）
 
-`run_folder.bat` は以下を自動で行います。
+ラベルCSVは以下の列を持ちます。
 
-1. `.venv` が無ければ自動作成
-2. `numpy`, `scipy` をインストール
-3. `ffmpeg` / `ffprobe` の存在チェック
-4. `radio_cm_cutter.py process-folder` を実行
+- `audio_path`: 元音声ファイルのパス
+- `start_sec`: 区間開始秒
+- `end_sec`: 区間終了秒
+- `label`: `cm` または `program`
+- `note`: 任意メモ
 
-### 3) 出力先
+例（`data/labels/template.csv`）:
 
-- `対象フォルダ/cut_output/cut` : CM 除去後 MP3
-- `対象フォルダ/cut_output/segments` : 検出 CSV
-- `対象フォルダ/cut_output/reports` : HTML レポート
+```csv
+audio_path,start_sec,end_sec,label,note
+path/to/radio.mp3,0.0,15.0,program,番組本編の例
+path/to/radio.mp3,120.0,150.0,cm,CM区間の例
+```
 
-## CLI 例
+> ラベルはあとからCSVに追記して継続的に増やせます。
+
+---
+
+## 学習の流れ（継続学習）
+
+1. テンプレート作成
+
+```bash
+python radio_cm_cutter.py init-label-template --out data/labels/new_labels.csv
+```
+
+2. `data/labels/*.csv` に `cm/program` 区間を追記
+3. 学習
+
+```bash
+python radio_cm_cutter.py train --labels data/labels/*.csv --out model/model.pkl
+```
+
+4. 推論（モデルがあれば自動利用）
+
+```bash
+python radio_cm_cutter.py process-folder "C:/radio"
+```
+
+新しいラベルを追加したら、再度 `train` を実行して `model/model.pkl` を更新してください。
+
+---
+
+## CLI例
+
+### 単体ファイル検出（自動でML優先）
+
+```bash
+python radio_cm_cutter.py detect input.mp3
+```
+
+### 単体ファイル検出（MLのみ）
+
+```bash
+python radio_cm_cutter.py detect-ml input.mp3 --model model/model.pkl
+```
+
+### 学習
+
+```bash
+python radio_cm_cutter.py train --labels data/labels/*.csv --out model/model.pkl
+```
+
+### フォルダ一括
 
 ```bash
 python radio_cm_cutter.py process-folder "C:/music/radio" --recursive
 ```
 
-## トラブルシュート
+---
 
-- `ffmpeg が見つかりません` / `ffprobe が見つかりません`
-  - FFmpeg をインストールし、PATH を設定してください。
-- 処理途中でエラーが出る
-  - 出力ログの `NG` 行にファイル名と原因が表示されます。
+## `run_folder.bat` のメニュー操作
+
+`run_folder.bat` を起動すると次のメニューが出ます。
+
+1. フォルダ一括カット（推論）
+2. 学習用データ作成（テンプレ生成）
+3. 学習（train）
+4. レポート/確認（reportを開く）
+
+日本語メッセージで案内されるので、順番に実行できます。
+
+---
+
+## モデルとフォールバック
+
+- モデル保存先デフォルト: `model/model.pkl`
+- `process-folder` / `detect` は、モデルが存在すればML推論を使います。
+- モデルが無い、または読み込み失敗時は従来の音量差ルールにフォールバックします。
+
+`config.json` で以下を調整可能です。
+
+- `model_path`
+- `ml_start_prob` / `ml_end_prob`
+- 従来方式の `start_delta_db`, `end_delta_db`, `min_cm_sec`, `merge_gap_sec`, `pad_sec`
+
+---
+
+## うまくいかないときの調整
+
+1. **誤検出が多い**
+   - ラベルCSVに「program」の例を増やす
+   - `ml_start_prob` を上げる（例: 0.60）
+2. **取りこぼしが多い**
+   - ラベルCSVに「cm」の例を増やす
+   - `ml_start_prob` を下げる（例: 0.50）
+3. **区間が細切れになる**
+   - `merge_gap_sec` を増やす
+   - `min_cm_sec` を増やす
+4. **境界が厳しすぎる**
+   - `pad_sec` を増やす
+
+---
+
+## 出力先
+
+`process-folder` の出力:
+
+- `対象フォルダ/cut_output/cut` : CM除去後MP3
+- `対象フォルダ/cut_output/segments` : 検出CSV
+- `対象フォルダ/cut_output/reports` : HTMLレポート

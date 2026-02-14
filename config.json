@@ -12,5 +12,9 @@
 
   "min_score": 2.5,
 
+  "model_path": "model/model.pkl",
+  "ml_start_prob": 0.55,
+  "ml_end_prob": 0.50,
+
   "mp3_quality_q": 2
 }
