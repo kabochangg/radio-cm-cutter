@@ -26,6 +26,13 @@ if not exist "%PY%" (
     pause
     exit /b 1
   )
+<<<<<<< ours
+)
+
+echo [INFO] 依存ライブラリを確認/インストールしています...
+"%PY%" -m pip install --upgrade pip
+"%PY%" -m pip install numpy scipy scikit-learn
+=======
 )
 
 echo [INFO] 依存ライブラリを確認/インストールしています...
@@ -46,6 +53,75 @@ if not %errorlevel%==0 (
   exit /b 1
 )
 
+:MENU
+echo.
+echo ================================================
+echo   Radio CM Cutter メニュー
+echo ================================================
+echo   1. フォルダ一括カット（推論）
+echo   2. 学習用データ作成（テンプレ生成）
+echo   3. 学習（train）
+echo   4. レポート/確認（reportを開く）
+echo   5. 学習データ評価（evaluate）
+echo   0. 終了
+echo ================================================
+set /p CHOICE=番号を入力してください: 
+
+if "%CHOICE%"=="1" goto RUN_INFER
+if "%CHOICE%"=="2" goto MAKE_TEMPLATE
+if "%CHOICE%"=="3" goto TRAIN
+if "%CHOICE%"=="4" goto OPEN_REPORT
+if "%CHOICE%"=="5" goto EVALUATE
+if "%CHOICE%"=="0" goto END
+
+echo [WARN] 無効な入力です。
+goto MENU
+
+:RUN_INFER
+set "FOLDER=%~1"
+if "%FOLDER%"=="" (
+  for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='MP3フォルダを選択'; if($d.ShowDialog() -eq 'OK'){ $d.SelectedPath }"`) do set "FOLDER=%%I"
+)
+
+if "%FOLDER%"=="" (
+  echo [INFO] フォルダが選択されませんでした。
+  goto MENU
+)
+
+echo [INFO] 対象フォルダ: "%FOLDER%"
+"%PY%" "%~dp0radio_cm_cutter.py" process-folder "%FOLDER%" --recursive
+if not %errorlevel%==0 (
+  echo [ERROR] 推論処理でエラーが発生しました。
+)
+goto MENU
+>>>>>>> theirs
+
+:MAKE_TEMPLATE
+set /p TEMPLATE=出力先CSV（既定: data/labels/template_new.csv）: 
+if "%TEMPLATE%"=="" set "TEMPLATE=data/labels/template_new.csv"
+set /p AUDIO=サンプル音声パス（任意。空欄可）: 
+if "%AUDIO%"=="" (
+  "%PY%" "%~dp0radio_cm_cutter.py" init-label-template --out "%TEMPLATE%"
+) else (
+  "%PY%" "%~dp0radio_cm_cutter.py" init-label-template --out "%TEMPLATE%" --audio-path "%AUDIO%"
+)
+if not %errorlevel%==0 (
+  echo [ERROR] テンプレ生成に失敗しました。
+)
+goto MENU
+
+:TRAIN
+set /p PATTERN=ラベルCSVパターン（既定: data/labels/*.csv）: 
+if "%PATTERN%"=="" set "PATTERN=data/labels/*.csv"
+set /p MODEL_OUT=モデル出力先（既定: model/model.pkl）: 
+if "%MODEL_OUT%"=="" set "MODEL_OUT=model/model.pkl"
+"%PY%" "%~dp0radio_cm_cutter.py" train --labels "%PATTERN%" --out "%MODEL_OUT%"
+if not %errorlevel%==0 (
+  echo [ERROR] 学習に失敗しました。
+)
+goto MENU
+
+<<<<<<< ours
 :MENU
 echo.
 echo ================================================
@@ -124,6 +200,32 @@ if exist "%REP_FOLDER%\cut_output\reports" (
 )
 goto MENU
 
+=======
+:OPEN_REPORT
+set /p REP_FOLDER=処理済みフォルダ（cut_output がある場所）を入力: 
+if "%REP_FOLDER%"=="" (
+  echo [INFO] フォルダ未入力です。
+  goto MENU
+)
+if exist "%REP_FOLDER%\cut_output\reports" (
+  start "" "%REP_FOLDER%\cut_output\reports"
+) else (
+  echo [WARN] "%REP_FOLDER%\cut_output\reports" が見つかりません。
+)
+goto MENU
+
+:EVALUATE
+set /p PATTERN=ラベルCSVパターン（既定: data/labels/*.csv）: 
+if "%PATTERN%"=="" set "PATTERN=data/labels/*.csv"
+set /p MODEL_PATH=評価モデルパス（既定: model/model.pkl）: 
+if "%MODEL_PATH%"=="" set "MODEL_PATH=model/model.pkl"
+"%PY%" "%~dp0radio_cm_cutter.py" evaluate --labels "%PATTERN%" --model "%MODEL_PATH%"
+if not %errorlevel%==0 (
+  echo [ERROR] evaluate に失敗しました。
+)
+goto MENU
+
+>>>>>>> theirs
 :END
 echo 終了します。
 exit /b 0
