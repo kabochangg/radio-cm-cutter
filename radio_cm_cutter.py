@@ -15,10 +15,7 @@ import numpy as np
 from scipy.fftpack import dct
 from scipy.signal import medfilt
 from sklearn.linear_model import LogisticRegression
-<<<<<<< ours
-=======
 from sklearn.metrics import confusion_matrix
->>>>>>> theirs
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -304,9 +301,6 @@ def load_segments_csv(csv_path: Path) -> list[Segment]:
     return segs
 
 
-<<<<<<< ours
-def write_report_html(duration: float, segments: list[Segment], out_html: Path, mode: str = "heuristic") -> None:
-=======
 def write_report_html(
     duration: float,
     segments: list[Segment],
@@ -316,7 +310,6 @@ def write_report_html(
     score_values: np.ndarray | None = None,
     score_label: str = "score",
 ) -> None:
->>>>>>> theirs
     def pct(t: float) -> float:
         return 100.0 * t / max(duration, 1e-6)
 
@@ -448,11 +441,7 @@ def _cut_mp3_in_workdir(input_path: Path, keep_segments: list[Segment], out_path
     run(cmd2)
 
 
-<<<<<<< ours
-def _detect_segments_heuristic(x: np.ndarray, cfg: dict) -> tuple[list[Segment], str]:
-=======
 def _detect_segments_heuristic(x: np.ndarray, cfg: dict) -> tuple[list[Segment], str, np.ndarray, np.ndarray, str]:
->>>>>>> theirs
     sr = int(cfg["sample_rate"])
     rms_db = compute_frame_rms_db(x, sr, float(cfg["window_sec"]), float(cfg["hop_sec"]))
     hop_sec = float(cfg["hop_sec"])
@@ -476,12 +465,8 @@ def _detect_segments_heuristic(x: np.ndarray, cfg: dict) -> tuple[list[Segment],
     if min_score > 0:
         segments = [s for s in segments if s.score >= min_score]
 
-<<<<<<< ours
-    return segments, "heuristic"
-=======
     frame_times = np.arange(delta.shape[0], dtype=np.float32) * hop_sec
     return segments, "heuristic", frame_times, delta, "delta dB"
->>>>>>> theirs
 
 
 def _load_model(model_path: Path) -> dict:
@@ -492,11 +477,7 @@ def _load_model(model_path: Path) -> dict:
     return obj
 
 
-<<<<<<< ours
-def _detect_segments_ml(x: np.ndarray, cfg: dict, model_path: Path) -> tuple[list[Segment], str]:
-=======
 def _detect_segments_ml(x: np.ndarray, cfg: dict, model_path: Path) -> tuple[list[Segment], str, np.ndarray, np.ndarray, str]:
->>>>>>> theirs
     model_obj = _load_model(model_path)
     model_cfg = model_obj.get("config", {})
     model = model_obj["model"]
@@ -505,15 +486,9 @@ def _detect_segments_ml(x: np.ndarray, cfg: dict, model_path: Path) -> tuple[lis
     window_sec = float(model_cfg.get("window_sec", cfg["window_sec"]))
     hop_sec = float(model_cfg.get("hop_sec", cfg["hop_sec"]))
 
-<<<<<<< ours
-    feats, _ = compute_frame_features(x, sr, window_sec, hop_sec)
-    if feats.shape[0] == 0:
-        return [], "ml"
-=======
     feats, frame_times = compute_frame_features(x, sr, window_sec, hop_sec)
     if feats.shape[0] == 0:
         return [], "ml", np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32), "CM probability"
->>>>>>> theirs
 
     probs = model.predict_proba(feats)[:, 1]
 
@@ -529,11 +504,7 @@ def _detect_segments_ml(x: np.ndarray, cfg: dict, model_path: Path) -> tuple[lis
         merge_gap_sec=float(cfg["merge_gap_sec"]),
         pad_sec=float(cfg["pad_sec"]),
     )
-<<<<<<< ours
-    return segments, "ml"
-=======
     return segments, "ml", frame_times, probs, "CM probability"
->>>>>>> theirs
 
 
 def _resolve_model_path(args: argparse.Namespace, cfg: dict) -> Path:
@@ -542,16 +513,12 @@ def _resolve_model_path(args: argparse.Namespace, cfg: dict) -> Path:
     return Path(cfg.get("model_path", "model/model.pkl"))
 
 
-<<<<<<< ours
-def _detect_with_fallback(x: np.ndarray, cfg: dict, model_path: Path, require_ml: bool = False) -> tuple[list[Segment], str]:
-=======
 def _detect_with_fallback(
     x: np.ndarray,
     cfg: dict,
     model_path: Path,
     require_ml: bool = False,
 ) -> tuple[list[Segment], str, np.ndarray, np.ndarray, str]:
->>>>>>> theirs
     if model_path.exists():
         try:
             return _detect_segments_ml(x, cfg, model_path)
@@ -582,20 +549,13 @@ def cmd_detect(args: argparse.Namespace) -> None:
     duration = x.size / sr
 
     print("[3/4] Detecting CM segments...")
-<<<<<<< ours
-    segments, mode = _detect_with_fallback(x, cfg, model_path)
-=======
     segments, mode, score_times, score_values, score_label = _detect_with_fallback(x, cfg, model_path)
->>>>>>> theirs
 
     out_csv = Path(args.out_csv or (input_path.stem + "_segments.csv"))
     out_html = Path(args.out_html or (input_path.stem + "_report.html"))
 
     print("[4/4] Saving outputs...")
     save_segments_csv(segments, out_csv)
-<<<<<<< ours
-    write_report_html(duration, segments, out_html, mode=mode)
-=======
     write_report_html(
         duration,
         segments,
@@ -605,7 +565,6 @@ def cmd_detect(args: argparse.Namespace) -> None:
         score_values=score_values,
         score_label=score_label,
     )
->>>>>>> theirs
 
     total_cm = sum((s.end - s.start) for s in segments)
     print(f"Saved: {out_csv} / {out_html} (mode={mode})")
@@ -625,18 +584,11 @@ def cmd_detect_ml(args: argparse.Namespace) -> None:
     sr = int(cfg["sample_rate"])
     duration = x.size / sr
 
-<<<<<<< ours
-    segments, mode = _detect_with_fallback(x, cfg, model_path, require_ml=True)
-=======
     segments, mode, score_times, score_values, score_label = _detect_with_fallback(x, cfg, model_path, require_ml=True)
->>>>>>> theirs
 
     out_csv = Path(args.out_csv or (input_path.stem + "_segments.csv"))
     out_html = Path(args.out_html or (input_path.stem + "_report.html"))
     save_segments_csv(segments, out_csv)
-<<<<<<< ours
-    write_report_html(duration, segments, out_html, mode=mode)
-=======
     write_report_html(
         duration,
         segments,
@@ -646,7 +598,6 @@ def cmd_detect_ml(args: argparse.Namespace) -> None:
         score_values=score_values,
         score_label=score_label,
     )
->>>>>>> theirs
 
     print(f"Saved: {out_csv} / {out_html} (mode={mode})")
 
@@ -792,8 +743,6 @@ def cmd_train(args: argparse.Namespace) -> None:
     print_ui_ok(f"Train metrics (frame): precision={best_p:.3f} recall={best_r:.3f} f1={best_f1:.3f} th={best_th:.2f}")
 
 
-<<<<<<< ours
-=======
 def cmd_evaluate(args: argparse.Namespace) -> None:
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
     label_rows = _load_label_rows(args.labels)
@@ -854,7 +803,6 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     print(f"precision={precision:.4f} recall={recall:.4f} f1={f1:.4f} samples={y_true.shape[0]}")
 
 
->>>>>>> theirs
 def cmd_init_label_template(args: argparse.Namespace) -> None:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -949,12 +897,6 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
             sr = int(cfg["sample_rate"])
             duration = x.size / sr
 
-<<<<<<< ours
-            segments, mode = _detect_with_fallback(x, cfg, model_path)
-
-            save_segments_csv(segments, out_csv)
-            write_report_html(duration, segments, out_html, mode=mode)
-=======
             segments, mode, score_times, score_values, score_label = _detect_with_fallback(x, cfg, model_path)
 
             save_segments_csv(segments, out_csv)
@@ -967,7 +909,6 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
                 score_values=score_values,
                 score_label=score_label,
             )
->>>>>>> theirs
 
             cm_sec = sum((s.end - s.start) for s in segments)
             total_cm += cm_sec
@@ -1024,14 +965,11 @@ def main() -> int:
     p_train.add_argument("--out", default="model/model.pkl", help="output model path")
     p_train.set_defaults(func=cmd_train)
 
-<<<<<<< ours
-=======
     p_eval = sub.add_parser("evaluate", help="evaluate model on labeled CSVs")
     p_eval.add_argument("--labels", nargs="+", required=True, help="label CSV patterns (ex: data/labels/*.csv)")
     p_eval.add_argument("--model", default=None, help="path to ML model (default: config model_path)")
     p_eval.set_defaults(func=cmd_evaluate)
 
->>>>>>> theirs
     p_template = sub.add_parser("init-label-template", help="create label template CSV")
     p_template.add_argument("--out", default="data/labels/template.csv", help="output template path")
     p_template.add_argument("--audio-path", default="", help="optional audio path to prefill sample rows")
