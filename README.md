@@ -22,10 +22,7 @@ MP3音源からCM区間を検出し、CMを除いたMP3を出力するツール�
 - `process-folder`: フォルダ内MP3を一括検出＆カット（モデルがあれば自動使用）
 - `init-label-template`: 学習ラベルのテンプレCSV生成
 - `train`: ラベルCSVからモデル学習
-<<<<<<< ours
-=======
 - `evaluate`: 学習データ上で混同行列 / precision / recall / F1 を確認
->>>>>>> theirs
 
 ---
 
@@ -52,7 +49,6 @@ path/to/radio.mp3,120.0,150.0,cm,CM区間の例
 ---
 
 ## 学習の流れ（継続学習）
-<<<<<<< ours
 
 1. テンプレート作成
 
@@ -97,52 +93,6 @@ python radio_cm_cutter.py detect-ml input.mp3 --model model/model.pkl
 python radio_cm_cutter.py train --labels data/labels/*.csv --out model/model.pkl
 ```
 
-=======
-
-1. テンプレート作成
-
-```bash
-python radio_cm_cutter.py init-label-template --out data/labels/new_labels.csv
-```
-
-2. `data/labels/*.csv` に `cm/program` 区間を追記
-3. 学習
-
-```bash
-python radio_cm_cutter.py train --labels data/labels/*.csv --out model/model.pkl
-```
-
-4. 推論（モデルがあれば自動利用）
-
-```bash
-python radio_cm_cutter.py process-folder "C:/radio"
-```
-
-新しいラベルを追加したら、再度 `train` を実行して `model/model.pkl` を更新してください。
-
----
-
-## CLI例
-
-### 単体ファイル検出（自動でML優先）
-
-```bash
-python radio_cm_cutter.py detect input.mp3
-```
-
-### 単体ファイル検出（MLのみ）
-
-```bash
-python radio_cm_cutter.py detect-ml input.mp3 --model model/model.pkl
-```
-
-### 学習
-
-```bash
-python radio_cm_cutter.py train --labels data/labels/*.csv --out model/model.pkl
-```
-
->>>>>>> theirs
 ### フォルダ一括
 
 ```bash
@@ -151,8 +101,6 @@ python radio_cm_cutter.py process-folder "C:/music/radio" --recursive
 
 ---
 
-<<<<<<< ours
-=======
 ### 学習データ評価
 
 ```bash
@@ -165,7 +113,6 @@ python radio_cm_cutter.py evaluate --labels data/labels/*.csv --model model/mode
 - Precision / Recall / F1
 
 
->>>>>>> theirs
 ## `run_folder.bat` のメニュー操作
 
 `run_folder.bat` を起動すると次のメニューが出ます。
@@ -174,21 +121,15 @@ python radio_cm_cutter.py evaluate --labels data/labels/*.csv --model model/mode
 2. 学習用データ作成（テンプレ生成）
 3. 学習（train）
 4. レポート/確認（reportを開く）
-<<<<<<< ours
-=======
 5. 学習データ評価（evaluate）
->>>>>>> theirs
 
 日本語メッセージで案内されるので、順番に実行できます。
 
 ---
 
-<<<<<<< ours
-=======
 
 レポート（`*_report.html`）には、検出セグメントに加えて **MLスコアタイムライン**（赤が濃いほどCM確率/スコア高）も表示されます。
 
->>>>>>> theirs
 ## モデルとフォールバック
 
 - モデル保存先デフォルト: `model/model.pkl`
