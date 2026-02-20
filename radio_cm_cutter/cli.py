@@ -29,6 +29,15 @@ class Segment:
     score: float = 0.0
 
 
+@dataclass
+class ProcessFolderResult:
+    files: int
+    success: int
+    failed: int
+    total_cm_sec: float
+    output_dir: Path
+
+
 def print_ui_header(title: str) -> None:
     line = "=" * 64
     print(f"\n{line}\n{title}\n{line}")
@@ -839,6 +848,10 @@ def cmd_cut(args: argparse.Namespace) -> None:
 
 
 def cmd_process_folder(args: argparse.Namespace) -> None:
+    _process_folder_impl(args)
+
+
+def _process_folder_impl(args: argparse.Namespace) -> ProcessFolderResult:
     print_ui_header("Radio CM Cutter - Folder Batch")
     print_ui_step("Checking external tools...")
     ensure_commands(["ffmpeg", "ffprobe"])
@@ -866,7 +879,7 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
     files = sorted(folder.rglob("*.mp3") if args.recursive else folder.glob("*.mp3"))
     if not files:
         print(f"No mp3 files found in: {folder}")
-        return
+        return ProcessFolderResult(files=0, success=0, failed=0, total_cm_sec=0.0, output_dir=out_dir)
 
     ml_enabled = model_path.exists()
     print_ui_step(f"Target folder: {folder}")
@@ -942,6 +955,13 @@ def cmd_process_folder(args: argparse.Namespace) -> None:
         print_ui_ok("Batch process completed")
     else:
         print_ui_ng("Batch process completed with errors")
+    return ProcessFolderResult(
+        files=len(files),
+        success=ok,
+        failed=ng,
+        total_cm_sec=total_cm,
+        output_dir=out_dir,
+    )
 
 
 def _action_hint(exc: Exception) -> str:
