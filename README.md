@@ -41,6 +41,42 @@ python -m radio_cm_cutter_app
 - 未指定時の出力先は `cut_output/YYYYMMDD_HHMMSS/` です。
 - 設定値（入力/出力/モデル/ffmpegパス）は `%APPDATA%/radio-cm-cutter/gui_settings.json` に保存され、次回起動時に復元されます。
 
+
+## Windows向けEXEビルド（PyInstaller）
+
+### 目的
+GUIアプリ（`python -m radio_cm_cutter_app`）を、Python未導入PCでも実行しやすい `EXE` として配布するための手順です。
+
+### 事前準備
+- Windows 10/11
+- Python 3.11
+- PowerShell 実行可能環境
+- FFmpeg は**同梱しません**（PATH設定 or GUIで `ffmpeg.exe` 指定）
+
+### ビルド手順（非エンジニア向け）
+1. リポジトリを展開
+2. `scripts\build_windows.bat` をダブルクリック
+   - もしくは PowerShell で `./scripts/build_windows.ps1` を実行
+3. 完了後、`dist/radio-cm-cutter-gui-windows.zip` が生成されます
+
+ビルドスクリプトは次を自動実行します。
+- 仮想環境作成（`.venv-build/`）
+- 依存インストール（`requirements-app.txt`）
+- PyInstaller実行（`scripts/radio_cm_cutter_gui.spec`）
+- `dist/` へのEXE出力とzip化
+
+### 配布物の中身
+`radio-cm-cutter-gui-windows.zip`
+- `radio-cm-cutter-gui.exe`
+- `README.md`
+
+> `dist/` と `build/` は生成物のためGit管理しません。
+
+### GitHub Actionsでのビルド
+- workflow: `.github/workflows/build-windows-exe.yml`
+- `windows-latest` 上で `scripts/build_windows.ps1` を実行し、
+  `dist/radio-cm-cutter-gui-windows.zip` をartifactとして保存します。
+
 ## CLI一覧
 - `detect`
 - `detect-ml`
@@ -61,6 +97,16 @@ python -m radio_cm_cutter_app
 ### ffmpeg/ffprobe が見つからない
 - 症状: 実行時に `Required command not found`。
 - 対応: FFmpegをインストールし、`ffmpeg` と `ffprobe` のPATHを通してください。
+
+
+### EXEがウイルス対策ソフトで誤検知される
+- 症状: 実行ファイルが隔離/ブロックされる。
+- 対応: PyInstaller製EXEで誤検知される場合があります。社内配布時は署名・配布経路のホワイトリスト化を検討してください。
+
+### EXEでffmpegが見つからない
+- 症状: `Required command not found` またはGUIでffmpeg関連エラー。
+- 対応: FFmpeg本体は同梱していないため、PATH設定またはGUIで `ffmpeg.exe` を指定してください。
+- 補足: GUIで指定したパスは `%APPDATA%/radio-cm-cutter/gui_settings.json` に保存され、次回起動時に復元されます。
 
 ### モデルが読み込めない
 - 症状: `Model not found` / モデルロード例外。
