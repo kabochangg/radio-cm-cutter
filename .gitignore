@@ -13,3 +13,10 @@ model/
 
 # Optional local artifacts
 *.log
+
+# Build artifacts
+dist/
+build/
+.venv-build/
+*.spec
+!scripts/radio_cm_cutter_gui.spec

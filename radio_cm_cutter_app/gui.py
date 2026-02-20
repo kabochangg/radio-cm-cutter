@@ -11,6 +11,7 @@ from tkinter import BOTH, END, LEFT, RIGHT, W, Button, Entry, Frame, Label, Stri
 from tkinter.scrolledtext import ScrolledText
 
 from radio_cm_cutter.api import default_output_dir, process_folder_api
+from radio_cm_cutter_app.runtime_paths import app_base_dir, bundled_resource_path
 
 APP_NAME = "radio-cm-cutter"
 SETTINGS_FILE = "gui_settings.json"
@@ -24,9 +25,10 @@ class RadioCmCutterGui:
 
         self.settings_path = self._settings_path()
         self.settings = self._load_settings()
+        self.config_path = bundled_resource_path("config.json")
 
         self.input_var = StringVar(value=self.settings.get("input_folder", ""))
-        self.model_var = StringVar(value=self.settings.get("model_path", "model/model.pkl"))
+        self.model_var = StringVar(value=self.settings.get("model_path", self._default_model_path()))
         self.output_var = StringVar(value=self.settings.get("output_folder", str(default_output_dir())))
         self.ffmpeg_var = StringVar(value=self.settings.get("ffmpeg_path", ""))
 
@@ -60,6 +62,10 @@ class RadioCmCutterGui:
             "ffmpeg_path": self.ffmpeg_var.get().strip(),
         }
         self.settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _default_model_path(self) -> str:
+        candidate = app_base_dir() / "model" / "model.pkl"
+        return str(candidate)
 
     def _build(self) -> None:
         self._row("入力フォルダ", self.input_var, self._pick_input)
@@ -150,6 +156,7 @@ class RadioCmCutterGui:
                 folder=self.input_var.get().strip(),
                 model_path=self.model_var.get().strip() or None,
                 out_dir=self.output_var.get().strip() or None,
+                config_path=str(self.config_path),
                 ffmpeg_path=self.ffmpeg_var.get().strip() or None,
                 recursive=True,
                 log_callback=self._enqueue_log,

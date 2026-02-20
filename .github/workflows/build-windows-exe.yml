@@ -1,0 +1,30 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build GUI EXE
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+
+      - name: Upload dist zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: radio-cm-cutter-gui-windows
+          path: dist/radio-cm-cutter-gui-windows.zip
