@@ -2,7 +2,14 @@
 __pycache__/
 .cache/
 *.wav
-*.csv
-*.html
 output*.mp3
 parts_*/
+
+# Runtime outputs
+cut_output/
+**/cut_output/
+model/
+!model/.gitkeep
+
+# Optional local artifacts
+*.log

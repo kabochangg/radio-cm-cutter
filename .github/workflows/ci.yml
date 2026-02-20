@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Detect conflict markers
+        shell: bash
+        run: |
+          if rg -n "^(<<<<<<<|=======|>>>>>>>)"; then
+            echo "Conflict markers detected"
+            exit 1
+          fi
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile all
+        run: python -m compileall .
+      - name: Smoke help
+        run: python radio_cm_cutter.py --help
