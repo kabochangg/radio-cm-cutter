@@ -20,3 +20,5 @@ build/
 .venv-build/
 *.spec
 !scripts/radio_cm_cutter_gui.spec
+
+installer_out/
