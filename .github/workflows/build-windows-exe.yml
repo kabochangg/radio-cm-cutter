@@ -28,3 +28,39 @@ jobs:
         with:
           name: radio-cm-cutter-gui-windows
           path: dist/radio-cm-cutter-gui-windows.zip
+
+
+  build-installer-optional:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Detect Inno Setup
+        id: detect_inno
+        shell: pwsh
+        run: |
+          if (Get-Command iscc.exe -ErrorAction SilentlyContinue) {
+            "has_iscc=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } elseif (Test-Path "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe") {
+            "has_iscc=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "has_iscc=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Inno Setup is not available on this runner. Skipping installer build."
+          }
+
+      - name: Build installer (optional)
+        if: steps.detect_inno.outputs.has_iscc == 'true'
+        shell: pwsh
+        run: ./scripts/build_installer.ps1
+
+      - name: Upload installer artifact
+        if: steps.detect_inno.outputs.has_iscc == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: radio-cm-cutter-installer
+          path: installer_out/RadioCmCutterSetup.exe
