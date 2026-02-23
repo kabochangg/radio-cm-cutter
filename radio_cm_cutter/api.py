@@ -71,6 +71,7 @@ def process_folder_api(
     overwrite: bool = False,
     keep_parts: bool = False,
     ffmpeg_path: str | None = None,
+    detect_only: bool = False,
     log_callback: LogCallback | None = None,
 ) -> ProcessFolderResult:
     """Run folder processing via existing CLI logic and stream logs."""
@@ -85,6 +86,7 @@ def process_folder_api(
         overwrite=overwrite,
         keep_parts=keep_parts,
         model=model_path,
+        detect_only=detect_only,
     )
 
     out_writer = _LogWriter(sys.stdout, log_callback)
