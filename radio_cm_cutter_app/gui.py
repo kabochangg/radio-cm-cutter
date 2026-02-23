@@ -4,18 +4,23 @@ import json
 import logging
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
 import traceback
+import urllib.error
+import urllib.request
 import webbrowser
+import zipfile
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, W, Button, Entry, Frame, Label, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 from radio_cm_cutter.api import default_output_dir, process_folder_api
 from radio_cm_cutter_app.diagnostics import collect_diagnostics, export_diagnostic_zip
-from radio_cm_cutter_app.runtime_paths import config_dir, bundled_resource_path, logs_dir
+from radio_cm_cutter_app.ffmpeg_support import FFMPEG_ARCHIVE_NAME, FFMPEG_DOWNLOAD_URL
+from radio_cm_cutter_app.runtime_paths import config_dir, bundled_resource_path, ffmpeg_dir, logs_dir
 
 APP_NAME = "radio-cm-cutter"
 SETTINGS_FILE = "gui_settings.json"
@@ -45,6 +50,7 @@ class RadioCmCutterGui:
         self.startup_logger.info("GUI started")
 
         self._build()
+        self.root.after(150, self._check_ffmpeg_on_startup)
         self._poll_log_queue()
 
     def _settings_path(self) -> Path:
@@ -131,6 +137,165 @@ class RadioCmCutterGui:
         p = filedialog.askopenfilename(title="ffmpeg.exe または ffmpeg/bin フォルダを選択", filetypes=[("Executable", "*.exe"), ("All", "*.*")])
         if p:
             self.ffmpeg_var.set(p)
+            self._save_settings()
+
+    def _ffmpeg_search_candidates(self) -> list[Path]:
+        selected = self.ffmpeg_var.get().strip()
+        candidates: list[Path] = []
+        if selected:
+            sel = Path(selected).expanduser()
+            candidates.extend([sel, sel.parent / "ffprobe.exe"] if sel.suffix.lower() == ".exe" else [sel / "ffmpeg.exe", sel / "ffprobe.exe", sel / "bin" / "ffmpeg.exe", sel / "bin" / "ffprobe.exe"])
+        install_dir = ffmpeg_dir()
+        candidates.extend(
+            [
+                install_dir / "ffmpeg.exe",
+                install_dir / "ffprobe.exe",
+                install_dir / "bin" / "ffmpeg.exe",
+                install_dir / "bin" / "ffprobe.exe",
+            ]
+        )
+        return candidates
+
+    def _resolve_ffmpeg_state(self) -> tuple[bool, list[str], str]:
+        searched: list[str] = []
+        selected = self.ffmpeg_var.get().strip()
+        if selected:
+            p = Path(selected).expanduser()
+            if p.is_file():
+                probe = p.parent / "ffprobe.exe"
+                searched.extend([str(p), str(probe)])
+                if p.name.lower() == "ffmpeg.exe" and probe.exists():
+                    return True, searched, str(p)
+            elif p.is_dir():
+                f1 = p / "ffmpeg.exe"
+                p1 = p / "ffprobe.exe"
+                f2 = p / "bin" / "ffmpeg.exe"
+                p2 = p / "bin" / "ffprobe.exe"
+                searched.extend([str(f1), str(p1), str(f2), str(p2)])
+                if (f1.exists() and p1.exists()) or (f2.exists() and p2.exists()):
+                    return True, searched, str(p)
+            else:
+                searched.append(str(p))
+
+        which_ffmpeg = shutil.which("ffmpeg")
+        which_ffprobe = shutil.which("ffprobe")
+        searched.append(f"PATH: ffmpeg={which_ffmpeg or '未検出'}")
+        searched.append(f"PATH: ffprobe={which_ffprobe or '未検出'}")
+        if which_ffmpeg and which_ffprobe:
+            return True, searched, which_ffmpeg
+
+        for c in self._ffmpeg_search_candidates():
+            s = str(c)
+            if s not in searched:
+                searched.append(s)
+
+        return False, searched, ""
+
+    def _check_ffmpeg_on_startup(self) -> None:
+        ok, searched, _ = self._resolve_ffmpeg_state()
+        selected = self.ffmpeg_var.get().strip()
+        if ok:
+            return
+        if selected and not Path(selected).expanduser().exists():
+            self._show_ffmpeg_missing_dialog(searched, reason="前回指定された ffmpeg パスが見つかりませんでした。")
+
+    def _download_ffmpeg(self) -> tuple[bool, str]:
+        target_dir = ffmpeg_dir()
+        archive = target_dir / FFMPEG_ARCHIVE_NAME
+        try:
+            urllib.request.urlretrieve(FFMPEG_DOWNLOAD_URL, archive)
+            with zipfile.ZipFile(archive, "r") as zf:
+                zf.extractall(target_dir)
+            for candidate in target_dir.rglob("ffmpeg.exe"):
+                probe = candidate.parent / "ffprobe.exe"
+                if probe.exists():
+                    self.ffmpeg_var.set(str(candidate))
+                    self._save_settings()
+                    return True, f"ダウンロード完了: {candidate}"
+            return False, "ダウンロードは完了しましたが ffmpeg.exe / ffprobe.exe を見つけられませんでした。"
+        except urllib.error.URLError as exc:
+            return False, f"ネットワークエラー: {exc.reason}"
+        except zipfile.BadZipFile:
+            return False, "ダウンロードしたファイルが壊れているため解凍できませんでした。"
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            if archive.exists():
+                archive.unlink(missing_ok=True)
+
+    def _open_readme_guide(self) -> None:
+        readme = bundled_resource_path("README.md")
+        if not readme.exists():
+            messagebox.showwarning("README未検出", "導入手順ファイル README.md が見つかりませんでした。")
+            return
+        webbrowser.open(readme.resolve().as_uri())
+
+    def _show_ffmpeg_missing_dialog(self, searched: list[str], reason: str | None = None) -> bool:
+        dlg = Toplevel(self.root)
+        dlg.title("FFmpeg が見つかりません")
+        dlg.geometry("760x500")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        description = (
+            "ffmpeg / ffprobe が見つからないため実行できません。\n"
+            "自動で探した場所と、次にやることを確認してください。"
+        )
+        if reason:
+            description = f"{reason}\n\n{description}"
+        Label(dlg, text=description, justify="left", anchor="w").pack(fill="x", padx=12, pady=(12, 6))
+
+        next_step = (
+            "次にやること:\n"
+            "1) [ffmpeg.exeを選択] で ffmpeg.exe（または ffmpeg/bin を含むフォルダ）を指定\n"
+            "2) [導入手順を開く(README)] で導入手順を確認\n"
+            "3) （任意）[ffmpegをダウンロード] で自動取得"
+        )
+        Label(dlg, text=next_step, justify="left", anchor="w").pack(fill="x", padx=12, pady=(0, 8))
+
+        text = ScrolledText(dlg, wrap="word", height=16)
+        text.pack(fill=BOTH, expand=True, padx=12, pady=8)
+        text.insert("1.0", "自動で探した場所:\n- " + "\n- ".join(searched))
+        text.configure(state="disabled")
+
+        decision = {"ok": False}
+
+        def pick() -> None:
+            p = filedialog.askopenfilename(
+                title="ffmpeg.exe を選択",
+                filetypes=[("FFmpeg executable", "ffmpeg.exe"), ("Executable", "*.exe"), ("All", "*.*")],
+            )
+            if not p:
+                return
+            self.ffmpeg_var.set(p)
+            self._save_settings()
+            ok, _, _ = self._resolve_ffmpeg_state()
+            if ok:
+                decision["ok"] = True
+                dlg.destroy()
+                return
+            messagebox.showwarning("ffprobe未検出", "ffprobe.exe も必要です。ffmpeg/bin 一式を指定してください。")
+
+        def download() -> None:
+            self._enqueue_log("FFmpeg ダウンロードを開始します...")
+            ok, msg = self._download_ffmpeg()
+            self._enqueue_log(msg)
+            if ok:
+                messagebox.showinfo("FFmpeg", msg)
+                decision["ok"] = True
+                dlg.destroy()
+            else:
+                messagebox.showerror("FFmpeg ダウンロード失敗", msg)
+
+        btns = Frame(dlg)
+        btns.pack(fill="x", padx=12, pady=(0, 12))
+        Button(btns, text="ffmpeg.exeを選択", width=18, command=pick).pack(side=LEFT)
+        Button(btns, text="導入手順を開く(README)", width=22, command=self._open_readme_guide).pack(side=LEFT, padx=8)
+        Button(btns, text="ffmpegをダウンロード", width=18, command=download).pack(side=LEFT, padx=8)
+        Button(btns, text="キャンセル", width=12, command=dlg.destroy).pack(side=RIGHT)
+
+        self.root.wait_window(dlg)
+        return decision["ok"]
 
     def _append_log(self, message: str) -> None:
         self.log_text.insert(END, message + "\n")
@@ -162,6 +327,13 @@ class RadioCmCutterGui:
 
         output_dir = self.output_var.get().strip() or str(default_output_dir())
         self.output_var.set(output_dir)
+
+        ok, searched, _ = self._resolve_ffmpeg_state()
+        if not ok:
+            selected = self.ffmpeg_var.get().strip()
+            reason = "前回指定された ffmpeg パスが見つかりませんでした。" if selected else None
+            if not self._show_ffmpeg_missing_dialog(searched, reason=reason):
+                return
 
         self.open_report_btn.configure(state="disabled")
         self._save_settings()
