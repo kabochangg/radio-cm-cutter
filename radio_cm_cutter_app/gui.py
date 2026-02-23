@@ -14,7 +14,23 @@ import urllib.request
 import webbrowser
 import zipfile
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, W, Button, Entry, Frame, Label, StringVar, Tk, Toplevel, filedialog, messagebox
+from tkinter import (
+    BOTH,
+    END,
+    LEFT,
+    RIGHT,
+    W,
+    Button,
+    Entry,
+    Frame,
+    Label,
+    Radiobutton,
+    StringVar,
+    Tk,
+    Toplevel,
+    filedialog,
+    messagebox,
+)
 from tkinter.scrolledtext import ScrolledText
 
 from radio_cm_cutter.api import default_output_dir, process_folder_api
@@ -24,6 +40,8 @@ from radio_cm_cutter_app.runtime_paths import config_dir, bundled_resource_path,
 
 APP_NAME = "radio-cm-cutter"
 SETTINGS_FILE = "gui_settings.json"
+MODE_DETECT_ONLY = "detect_only"
+MODE_DETECT_AND_CUT = "detect_and_cut"
 
 
 class RadioCmCutterGui:
@@ -40,6 +58,7 @@ class RadioCmCutterGui:
         self.model_var = StringVar(value=self.settings.get("model_path", self._default_model_path()))
         self.output_var = StringVar(value=self.settings.get("output_folder", str(default_output_dir())))
         self.ffmpeg_var = StringVar(value=self.settings.get("ffmpeg_path", ""))
+        self.mode_var = StringVar(value=self.settings.get("run_mode", MODE_DETECT_ONLY))
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.running = False
@@ -81,6 +100,7 @@ class RadioCmCutterGui:
             "model_path": self.model_var.get().strip(),
             "output_folder": self.output_var.get().strip(),
             "ffmpeg_path": self.ffmpeg_var.get().strip(),
+            "run_mode": self.mode_var.get().strip() or MODE_DETECT_ONLY,
         }
         self.settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -92,6 +112,12 @@ class RadioCmCutterGui:
         self._row("モデル (.pkl)", self.model_var, self._pick_model)
         self._row("出力フォルダ", self.output_var, self._pick_output)
         self._row("FFmpegパス(任意)", self.ffmpeg_var, self._pick_ffmpeg)
+
+        mode_row = Frame(self.root)
+        mode_row.pack(fill="x", padx=12, pady=4)
+        Label(mode_row, text="実行モード", width=18, anchor=W).pack(side=LEFT)
+        Radiobutton(mode_row, text="検出だけ", variable=self.mode_var, value=MODE_DETECT_ONLY).pack(side=LEFT, padx=(0, 12))
+        Radiobutton(mode_row, text="検出してカット", variable=self.mode_var, value=MODE_DETECT_AND_CUT).pack(side=LEFT)
 
         action = Frame(self.root)
         action.pack(fill="x", padx=12, pady=8)
@@ -340,7 +366,8 @@ class RadioCmCutterGui:
         self._set_running(True)
         self._enqueue_log("=== 実行開始 ===")
         self.run_logger.info(
-            "process-folder requested input=%s output=%s model=%s ffmpeg=%s",
+            "process-folder requested mode=%s input=%s output=%s model=%s ffmpeg=%s",
+            self.mode_var.get(),
             self.input_var.get().strip(),
             self.output_var.get().strip(),
             self.model_var.get().strip(),
@@ -352,20 +379,50 @@ class RadioCmCutterGui:
 
     def _worker(self) -> None:
         try:
-            result = process_folder_api(
+            mode = self.mode_var.get().strip() or MODE_DETECT_ONLY
+            detect_result = process_folder_api(
                 folder=self.input_var.get().strip(),
                 model_path=self.model_var.get().strip() or None,
                 out_dir=self.output_var.get().strip() or None,
                 config_path=str(self.config_path),
                 ffmpeg_path=self.ffmpeg_var.get().strip() or None,
                 recursive=True,
+                detect_only=True,
                 log_callback=self._enqueue_log,
             )
-            self.last_output_dir = result.output_dir
-            report_path = result.output_dir / "ml_report.html"
-            if report_path.exists():
-                self.root.after(0, lambda: self.open_report_btn.configure(state="normal"))
-            self._enqueue_log(f"完了: success={result.success}, failed={result.failed}, output={result.output_dir}")
+            self.last_output_dir = detect_result.output_dir
+            self._maybe_enable_report_button(detect_result.output_dir)
+
+            if mode == MODE_DETECT_ONLY:
+                self._enqueue_log(
+                    f"完了(検出のみ): success={detect_result.success}, failed={detect_result.failed}, "
+                    f"segments={detect_result.total_segments}, total_cm_sec={detect_result.total_cm_sec:.1f}, "
+                    f"output={detect_result.output_dir}"
+                )
+                self.root.after(0, self._open_report)
+                return
+
+            if not self._confirm_cut(detect_result.total_segments, detect_result.total_cm_sec):
+                self._enqueue_log("カットはキャンセルされました（検出結果のみ保存）。")
+                self.root.after(0, self._open_report)
+                return
+
+            cut_result = process_folder_api(
+                folder=self.input_var.get().strip(),
+                model_path=self.model_var.get().strip() or None,
+                out_dir=self.output_var.get().strip() or None,
+                config_path=str(self.config_path),
+                ffmpeg_path=self.ffmpeg_var.get().strip() or None,
+                recursive=True,
+                detect_only=False,
+                log_callback=self._enqueue_log,
+            )
+            self.last_output_dir = cut_result.output_dir
+            self._maybe_enable_report_button(cut_result.output_dir)
+            self._enqueue_log(
+                f"完了(検出+カット): success={cut_result.success}, failed={cut_result.failed}, "
+                f"output={cut_result.output_dir}"
+            )
         except Exception as exc:
             msg = self._friendly_error(exc)
             self._enqueue_log(msg)
@@ -375,6 +432,34 @@ class RadioCmCutterGui:
             self.root.after(0, lambda: messagebox.showerror("実行エラー", msg))
         finally:
             self.root.after(0, lambda: self._set_running(False))
+
+    def _confirm_cut(self, total_segments: int, total_cm_sec: float) -> bool:
+        msg = (
+            "カット前に検出結果を確認してください。\n\n"
+            f"検出箇所: {total_segments} 箇所\n"
+            f"合計CM秒数: {total_cm_sec:.1f} 秒\n\n"
+            "この内容でカット処理を実行しますか？"
+        )
+        return bool(self._run_on_ui_thread(lambda: messagebox.askyesno("カット前確認", msg)))
+
+    def _run_on_ui_thread(self, func):
+        done = threading.Event()
+        result: dict[str, object] = {}
+
+        def _invoke() -> None:
+            try:
+                result["value"] = func()
+            finally:
+                done.set()
+
+        self.root.after(0, _invoke)
+        done.wait()
+        return result.get("value")
+
+    def _maybe_enable_report_button(self, output_dir: Path) -> None:
+        report_path = output_dir / "ml_report.html"
+        if report_path.exists():
+            self.root.after(0, lambda: self.open_report_btn.configure(state="normal"))
 
     def _friendly_error(self, exc: Exception) -> str:
         raw = str(exc)

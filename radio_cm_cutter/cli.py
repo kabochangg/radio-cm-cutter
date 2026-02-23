@@ -36,6 +36,7 @@ class ProcessFolderResult:
     failed: int
     total_cm_sec: float
     output_dir: Path
+    total_segments: int = 0
 
 
 def print_ui_header(title: str) -> None:
@@ -868,6 +869,7 @@ def _process_folder_impl(args: argparse.Namespace) -> ProcessFolderResult:
     out_mp3_dir = out_dir / "cut"
     seg_dir = out_dir / "segments"
     rep_dir = out_dir / "reports"
+    detect_only = bool(getattr(args, "detect_only", False))
 
     out_mp3_dir.mkdir(parents=True, exist_ok=True)
     seg_dir.mkdir(parents=True, exist_ok=True)
@@ -892,6 +894,8 @@ def _process_folder_impl(args: argparse.Namespace) -> ProcessFolderResult:
     ok = 0
     ng = 0
     total_cm = 0.0
+    total_segments = 0
+    report_items: list[tuple[str, str, int, float]] = []
 
     for i, input_path in enumerate(files, 1):
         try:
@@ -900,9 +904,13 @@ def _process_folder_impl(args: argparse.Namespace) -> ProcessFolderResult:
             out_csv = seg_dir / f"{stem}_segments.csv"
             out_html = rep_dir / f"{stem}_report.html"
 
-            if out_mp3.exists() and not args.overwrite:
-                print(f"[{i:>3}/{len(files):>3}] SKIP  {input_path.name} (exists)")
-                continue
+            if not args.overwrite:
+                if detect_only and out_csv.exists() and out_html.exists():
+                    print(f"[{i:>3}/{len(files):>3}] SKIP  {input_path.name} (detect outputs exist)")
+                    continue
+                if (not detect_only) and out_mp3.exists():
+                    print(f"[{i:>3}/{len(files):>3}] SKIP  {input_path.name} (exists)")
+                    continue
 
             safe = f"{stem}_{abs(hash(str(input_path))) % 1000000}"
             wav_path = cache_dir / f"{safe}_16k_mono.wav"
@@ -928,18 +936,23 @@ def _process_folder_impl(args: argparse.Namespace) -> ProcessFolderResult:
 
             cm_sec = sum((s.end - s.start) for s in segments)
             total_cm += cm_sec
+            total_segments += len(segments)
             print(f"      -> mode={mode} segments={len(segments)} cm_sec={cm_sec:.1f}")
 
-            keep = complement_segments(ffprobe_duration(input_path), segments)
-            cut_mp3(
-                input_path,
-                keep,
-                out_mp3,
-                int(cfg.get("mp3_quality_q", 2)),
-                keep_parts=bool(args.keep_parts),
-            )
+            report_items.append((input_path.name, f"reports/{out_html.name}", len(segments), cm_sec))
+
+            if not detect_only:
+                keep = complement_segments(ffprobe_duration(input_path), segments)
+                cut_mp3(
+                    input_path,
+                    keep,
+                    out_mp3,
+                    int(cfg.get("mp3_quality_q", 2)),
+                    keep_parts=bool(args.keep_parts),
+                )
             ok += 1
-            print(f"      -> output={out_mp3.name}")
+            if not detect_only:
+                print(f"      -> output={out_mp3.name}")
 
         except Exception as e:
             ng += 1
@@ -950,18 +963,75 @@ def _process_folder_impl(args: argparse.Namespace) -> ProcessFolderResult:
     print(f"success     : {ok}")
     print(f"failed      : {ng}")
     print(f"total_cm_sec: {total_cm:.1f}")
+    print(f"segments    : {total_segments}")
     print(f"output      : {out_dir}")
     if ng == 0:
         print_ui_ok("Batch process completed")
     else:
         print_ui_ng("Batch process completed with errors")
+    _write_folder_summary_report(
+        out_html=out_dir / "ml_report.html",
+        report_items=report_items,
+        mode_label=("detect-only" if detect_only else "detect+cut"),
+        total_files=len(files),
+        success=ok,
+        failed=ng,
+        total_segments=total_segments,
+        total_cm_sec=total_cm,
+    )
+
     return ProcessFolderResult(
         files=len(files),
         success=ok,
         failed=ng,
         total_cm_sec=total_cm,
         output_dir=out_dir,
+        total_segments=total_segments,
     )
+
+
+def _write_folder_summary_report(
+    out_html: Path,
+    report_items: list[tuple[str, str, int, float]],
+    mode_label: str,
+    total_files: int,
+    success: int,
+    failed: int,
+    total_segments: int,
+    total_cm_sec: float,
+) -> None:
+    rows = "\n".join(
+        (
+            f"<tr><td>{idx}</td><td>{name}</td><td>{segments}</td><td>{cm_sec:.2f}</td>"
+            f"<td><a href=\"{href}\">open</a></td></tr>"
+        )
+        for idx, (name, href, segments, cm_sec) in enumerate(report_items, 1)
+    )
+    html = f"""<!doctype html>
+<html lang=\"ja\">
+<head>
+<meta charset=\"utf-8\">
+<title>ML Folder Report</title>
+<style>
+body {{ font-family: system-ui, -apple-system, \"Segoe UI\", sans-serif; margin: 20px; }}
+table {{ border-collapse: collapse; width: 100%; margin-top: 16px; }}
+th, td {{ border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }}
+th {{ background: #fafafa; }}
+</style>
+</head>
+<body>
+<h1>ML Folder Report</h1>
+<p><small>mode={mode_label} / files={total_files} / success={success} / failed={failed} / segments={total_segments} / total_cm_sec={total_cm_sec:.2f}</small></p>
+<table>
+<thead><tr><th>#</th><th>file</th><th>segments</th><th>cm_sec</th><th>report</th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+</body>
+</html>
+"""
+    out_html.write_text(html, encoding="utf-8")
 
 
 def _action_hint(exc: Exception) -> str:
@@ -1023,6 +1093,7 @@ def main() -> int:
     p_pf.add_argument("--overwrite", action="store_true", help="overwrite existing outputs")
     p_pf.add_argument("--keep-parts", action="store_true", help="keep intermediate part_*.mp3 files")
     p_pf.add_argument("--model", default=None, help="path to ML model (default: config model_path)")
+    p_pf.add_argument("--detect-only", action="store_true", help=argparse.SUPPRESS)
     p_pf.set_defaults(func=cmd_process_folder)
 
     args = p.parse_args()
