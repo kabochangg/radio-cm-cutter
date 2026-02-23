@@ -43,3 +43,15 @@ def logs_dir() -> Path:
     out = base / APP_NAME / "logs"
     out.mkdir(parents=True, exist_ok=True)
     return out
+
+
+def ffmpeg_dir() -> Path:
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        base = Path(local)
+    else:
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else (Path.home() / ".local" / "share")
+    out = base / APP_NAME / "ffmpeg"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
