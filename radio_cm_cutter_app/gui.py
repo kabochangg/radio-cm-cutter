@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
+import subprocess
+import sys
 import threading
 import traceback
 import webbrowser
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, W, Button, Entry, Frame, Label, StringVar, Tk, filedialog, messagebox
+from tkinter import BOTH, END, LEFT, RIGHT, W, Button, Entry, Frame, Label, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 from radio_cm_cutter.api import default_output_dir, process_folder_api
-from radio_cm_cutter_app.runtime_paths import app_base_dir, bundled_resource_path
+from radio_cm_cutter_app.diagnostics import collect_diagnostics, export_diagnostic_zip
+from radio_cm_cutter_app.runtime_paths import config_dir, bundled_resource_path, logs_dir
 
 APP_NAME = "radio-cm-cutter"
 SETTINGS_FILE = "gui_settings.json"
@@ -36,15 +40,26 @@ class RadioCmCutterGui:
         self.running = False
         self.last_output_dir: Path | None = None
 
+        self.startup_logger = self._create_logger("startup")
+        self.run_logger = self._create_logger("run")
+        self.startup_logger.info("GUI started")
+
         self._build()
         self._poll_log_queue()
 
     def _settings_path(self) -> Path:
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) if appdata else (Path.home() / ".config")
-        target_dir = base / APP_NAME
-        target_dir.mkdir(parents=True, exist_ok=True)
-        return target_dir / SETTINGS_FILE
+        return config_dir() / SETTINGS_FILE
+
+    def _create_logger(self, kind: str) -> logging.Logger:
+        log_path = logs_dir() / f"{kind}.log"
+        logger = logging.getLogger(f"{APP_NAME}.{kind}")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        if not any(isinstance(h, logging.FileHandler) and Path(h.baseFilename) == log_path for h in logger.handlers):
+            fh = logging.FileHandler(log_path, encoding="utf-8")
+            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            logger.addHandler(fh)
+        return logger
 
     def _load_settings(self) -> dict:
         if not self.settings_path.exists():
@@ -64,8 +79,7 @@ class RadioCmCutterGui:
         self.settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _default_model_path(self) -> str:
-        candidate = app_base_dir() / "model" / "model.pkl"
-        return str(candidate)
+        return str(bundled_resource_path("model", "model.pkl"))
 
     def _build(self) -> None:
         self._row("入力フォルダ", self.input_var, self._pick_input)
@@ -81,6 +95,12 @@ class RadioCmCutterGui:
 
         self.open_report_btn = Button(action, text="ml_report.html を開く", state="disabled", command=self._open_report)
         self.open_report_btn.pack(side=LEFT, padx=8)
+
+        self.diag_btn = Button(action, text="診断", command=self._open_diagnostics_dialog)
+        self.diag_btn.pack(side=LEFT, padx=8)
+
+        self.open_logs_btn = Button(action, text="ログを開く", command=self._open_logs_folder)
+        self.open_logs_btn.pack(side=LEFT, padx=8)
 
         self.log_text = ScrolledText(self.root, wrap="word", height=22)
         self.log_text.pack(fill=BOTH, expand=True, padx=12, pady=8)
@@ -117,6 +137,7 @@ class RadioCmCutterGui:
         self.log_text.see(END)
 
     def _enqueue_log(self, message: str) -> None:
+        self.run_logger.info(message)
         self.log_queue.put(message)
 
     def _poll_log_queue(self) -> None:
@@ -145,7 +166,14 @@ class RadioCmCutterGui:
         self.open_report_btn.configure(state="disabled")
         self._save_settings()
         self._set_running(True)
-        self._append_log("=== 実行開始 ===")
+        self._enqueue_log("=== 実行開始 ===")
+        self.run_logger.info(
+            "process-folder requested input=%s output=%s model=%s ffmpeg=%s",
+            self.input_var.get().strip(),
+            self.output_var.get().strip(),
+            self.model_var.get().strip(),
+            self.ffmpeg_var.get().strip(),
+        )
 
         t = threading.Thread(target=self._worker, daemon=True)
         t.start()
@@ -169,7 +197,9 @@ class RadioCmCutterGui:
         except Exception as exc:
             msg = self._friendly_error(exc)
             self._enqueue_log(msg)
-            self._enqueue_log(traceback.format_exc())
+            tb = traceback.format_exc()
+            self._enqueue_log(tb)
+            self.run_logger.error(tb)
             self.root.after(0, lambda: messagebox.showerror("実行エラー", msg))
         finally:
             self.root.after(0, lambda: self._set_running(False))
@@ -196,6 +226,45 @@ class RadioCmCutterGui:
             messagebox.showinfo("情報", "ml_report.html が見つかりません。")
             return
         webbrowser.open(report.resolve().as_uri())
+
+    def _open_logs_folder(self) -> None:
+        target = logs_dir()
+        try:
+            if os.name == "nt":
+                os.startfile(str(target))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.run(["open", str(target)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(target)], check=False)
+        except Exception as exc:
+            messagebox.showerror("エラー", f"ログフォルダを開けませんでした: {exc}")
+
+    def _open_diagnostics_dialog(self) -> None:
+        diag = collect_diagnostics(
+            settings_path=self.settings_path,
+            model_path=self.model_var.get().strip() or None,
+            ffmpeg_path=self.ffmpeg_var.get().strip() or None,
+        )
+
+        dlg = Toplevel(self.root)
+        dlg.title("診断")
+        dlg.geometry("780x480")
+
+        text = ScrolledText(dlg, wrap="word", height=20)
+        text.pack(fill=BOTH, expand=True, padx=12, pady=12)
+        lines = [f"{k}: {diag[k]}" for k in sorted(diag.keys())]
+        text.insert("1.0", "\n".join(lines))
+        text.configure(state="disabled")
+
+        bar = Frame(dlg)
+        bar.pack(fill="x", padx=12, pady=(0, 12))
+
+        def do_export() -> None:
+            out_zip = export_diagnostic_zip(diag=diag, settings_path=self.settings_path)
+            self.startup_logger.info("diagnostics zip exported: %s", out_zip)
+            messagebox.showinfo("診断", f"診断レポートZIPを出力しました:\n{out_zip}")
+
+        Button(bar, text="診断レポートzipを出力", command=do_export).pack(side=LEFT)
 
 
 def main() -> None:

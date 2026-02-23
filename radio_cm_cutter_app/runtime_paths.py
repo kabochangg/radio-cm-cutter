@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+
+APP_NAME = "radio-cm-cutter"
 
 
 def app_base_dir() -> Path:
@@ -20,3 +24,22 @@ def bundled_resource_path(*parts: str) -> Path:
             return candidate
     return app_base_dir().joinpath(*parts)
 
+
+def config_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    base = Path(appdata) if appdata else (Path.home() / ".config")
+    out = base / APP_NAME
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def logs_dir() -> Path:
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        base = Path(local)
+    else:
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else (Path.home() / ".local" / "state")
+    out = base / APP_NAME / "logs"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
