@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 $VenvDir = Join-Path $RepoRoot ".venv-build"
 $DistDir = Join-Path $RepoRoot "dist"
 $BuildDir = Join-Path $RepoRoot "build"

@@ -20,10 +20,15 @@ from tkinter.scrolledtext import ScrolledText
 
 from radio_cm_cutter.api import default_output_dir, evaluate_api, process_folder_api, train_api
 from radio_cm_cutter_app.diagnostics import collect_diagnostics, export_diagnostic_zip
-from radio_cm_cutter_app.ffmpeg_support import FFMPEG_ARCHIVE_NAME, FFMPEG_DOWNLOAD_URL
-from radio_cm_cutter_app.runtime_paths import bundled_resource_path, config_dir, ffmpeg_dir, logs_dir
-
-APP_NAME = "radio-cm-cutter"
+from radio_cm_cutter_app.support import (
+    APP_NAME,
+    FFMPEG_ARCHIVE_NAME,
+    FFMPEG_DOWNLOAD_URL,
+    bundled_resource_path,
+    config_dir,
+    ffmpeg_dir,
+    logs_dir,
+)
 SETTINGS_FILE = "gui_settings.json"
 MODE_DETECT_ONLY = "detect_only"
 MODE_DETECT_AND_CUT = "detect_and_cut"

@@ -21,7 +21,7 @@ jobs:
 
       - name: Build GUI EXE
         shell: pwsh
-        run: ./scripts/build_windows.ps1
+        run: ./.internal/scripts/build_windows.ps1
 
       - name: Upload dist zip artifact
         uses: actions/upload-artifact@v4
@@ -56,7 +56,7 @@ jobs:
       - name: Build installer (optional)
         if: steps.detect_inno.outputs.has_iscc == 'true'
         shell: pwsh
-        run: ./scripts/build_installer.ps1
+        run: ./.internal/scripts/build_installer.ps1
 
       - name: Upload installer artifact
         if: steps.detect_inno.outputs.has_iscc == 'true'
