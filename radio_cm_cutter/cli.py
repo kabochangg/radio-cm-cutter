@@ -39,6 +39,19 @@ class ProcessFolderResult:
     total_segments: int = 0
 
 
+@dataclass
+class EvaluateResult:
+    precision: float
+    recall: float
+    f1: float
+    samples: int
+    threshold: float
+    tp: int
+    fn: int
+    fp: int
+    tn: int
+
+
 def print_ui_header(title: str) -> None:
     line = "=" * 64
     print(f"\n{line}\n{title}\n{line}")
@@ -755,6 +768,18 @@ def cmd_train(args: argparse.Namespace) -> None:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
+    result = evaluate_impl(args)
+
+    print_ui_header("Evaluation (frame-level)")
+    print(f"threshold: {result.threshold:.3f}")
+    print("labels order: CM(1), Program(0)")
+    print("Confusion Matrix:")
+    print(f"  TP={result.tp}  FN={result.fn}")
+    print(f"  FP={result.fp}  TN={result.tn}")
+    print(f"precision={result.precision:.4f} recall={result.recall:.4f} f1={result.f1:.4f} samples={result.samples}")
+
+
+def evaluate_impl(args: argparse.Namespace) -> EvaluateResult:
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
     label_rows = _load_label_rows(args.labels)
     model_path = _resolve_model_path(args, cfg)
@@ -805,13 +830,17 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     cm = confusion_matrix(y_true, y_pred, labels=[1, 0])
     precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="binary", zero_division=0)
 
-    print_ui_header("Evaluation (frame-level)")
-    print(f"threshold: {threshold:.3f}")
-    print("labels order: CM(1), Program(0)")
-    print("Confusion Matrix:")
-    print(f"  TP={cm[0,0]}  FN={cm[0,1]}")
-    print(f"  FP={cm[1,0]}  TN={cm[1,1]}")
-    print(f"precision={precision:.4f} recall={recall:.4f} f1={f1:.4f} samples={y_true.shape[0]}")
+    return EvaluateResult(
+        precision=float(precision),
+        recall=float(recall),
+        f1=float(f1),
+        samples=int(y_true.shape[0]),
+        threshold=float(threshold),
+        tp=int(cm[0, 0]),
+        fn=int(cm[0, 1]),
+        fp=int(cm[1, 0]),
+        tn=int(cm[1, 1]),
+    )
 
 
 def cmd_init_label_template(args: argparse.Namespace) -> None:
