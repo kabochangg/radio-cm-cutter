@@ -4,8 +4,11 @@ import os
 import sys
 from pathlib import Path
 
-
 APP_NAME = "radio-cm-cutter"
+
+# ダウンロードURLはGUI実装に直書きせず、定数として分離する。
+FFMPEG_DOWNLOAD_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+FFMPEG_ARCHIVE_NAME = "ffmpeg-release-essentials.zip"
 
 
 def app_base_dir() -> Path:

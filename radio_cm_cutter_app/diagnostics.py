@@ -13,7 +13,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from radio_cm_cutter_app import __version__ as APP_SEMVER
-from radio_cm_cutter_app.runtime_paths import app_base_dir, config_dir, logs_dir
+from radio_cm_cutter_app.support import app_base_dir, config_dir, logs_dir
 
 
 def detect_ffmpeg(selected_ffmpeg: str | None = None) -> dict[str, str]:

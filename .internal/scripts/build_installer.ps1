@@ -4,12 +4,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 $VenvDir = Join-Path $RepoRoot ".venv-build"
 $DistDir = Join-Path $RepoRoot "dist"
 $BuildDir = Join-Path $RepoRoot "build"
 $SpecFile = Join-Path $ScriptDir "radio_cm_cutter_gui.spec"
-$IssFile = Join-Path $RepoRoot "installer\RadioCmCutter.iss"
+$IssFile = Join-Path $RepoRoot ".internal\installer\RadioCmCutter.iss"
 $InstallerOutput = Join-Path $RepoRoot "installer_out\RadioCmCutterSetup.exe"
 
 $VersionFile = Join-Path $RepoRoot "radio_cm_cutter_app\__init__.py"
@@ -51,7 +51,7 @@ if (-not $Iscc) {
   throw @"
 Inno Setup (ISCC.exe) が見つかりません。
 - Inno Setup 6 をインストールしてください: https://jrsoftware.org/isdl.php
-- インストール後に PowerShell を再起動して、再度 scripts/build_installer.ps1 を実行してください。
+- インストール後に PowerShell を再起動して、再度 .internal/scripts/build_installer.ps1 を実行してください。
 "@
 }
 
