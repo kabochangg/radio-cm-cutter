@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .cli import ProcessFolderResult, _process_folder_impl
+from .cli import EvaluateResult, ProcessFolderResult, _process_folder_impl, cmd_train, evaluate_impl
 
 LogCallback = Callable[[str], None]
 
@@ -93,6 +93,38 @@ def process_folder_api(
     err_writer = _LogWriter(sys.stderr, log_callback)
     with contextlib.redirect_stdout(out_writer), contextlib.redirect_stderr(err_writer):
         result = _process_folder_impl(args)
+    out_writer.flush()
+    err_writer.flush()
+    return result
+
+
+def train_api(
+    labels: list[str],
+    out_path: str = "model/model.pkl",
+    config_path: str = "config.json",
+    log_callback: LogCallback | None = None,
+) -> Path:
+    args = argparse.Namespace(config=config_path, labels=labels, out=out_path)
+    out_writer = _LogWriter(sys.stdout, log_callback)
+    err_writer = _LogWriter(sys.stderr, log_callback)
+    with contextlib.redirect_stdout(out_writer), contextlib.redirect_stderr(err_writer):
+        cmd_train(args)
+    out_writer.flush()
+    err_writer.flush()
+    return Path(out_path)
+
+
+def evaluate_api(
+    labels: list[str],
+    model_path: str | None = None,
+    config_path: str = "config.json",
+    log_callback: LogCallback | None = None,
+) -> EvaluateResult:
+    args = argparse.Namespace(config=config_path, labels=labels, model=model_path)
+    out_writer = _LogWriter(sys.stdout, log_callback)
+    err_writer = _LogWriter(sys.stderr, log_callback)
+    with contextlib.redirect_stdout(out_writer), contextlib.redirect_stderr(err_writer):
+        result = evaluate_impl(args)
     out_writer.flush()
     err_writer.flush()
     return result
