@@ -14,7 +14,7 @@ import urllib.request
 import webbrowser
 import zipfile
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, W, Button, Entry, Frame, Label, Radiobutton, StringVar, Tk, Toplevel, filedialog, messagebox
+from tkinter import BOTH, END, LEFT, RIGHT, W, BooleanVar, Button, Checkbutton, Entry, Frame, Label, Radiobutton, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -44,6 +44,7 @@ class RadioCmCutterGui:
         self.output_var = StringVar(value=self.settings.get("output_folder", str(default_output_dir())))
         self.ffmpeg_var = StringVar(value=self.settings.get("ffmpeg_path", ""))
         self.mode_var = StringVar(value=self.settings.get("run_mode", MODE_DETECT_ONLY))
+        self.auto_open_report_var = BooleanVar(value=bool(self.settings.get("auto_open_report", False)))
 
         self.train_labels_var = StringVar(value=self.settings.get("train_labels", ""))
         self.train_out_var = StringVar(value=self.settings.get("train_out", "model/model.pkl"))
@@ -92,6 +93,7 @@ class RadioCmCutterGui:
             "output_folder": self.output_var.get().strip(),
             "ffmpeg_path": self.ffmpeg_var.get().strip(),
             "run_mode": self.mode_var.get().strip() or MODE_DETECT_ONLY,
+            "auto_open_report": bool(self.auto_open_report_var.get()),
             "train_labels": self.train_labels_var.get().strip(),
             "train_out": self.train_out_var.get().strip(),
             "eval_labels": self.eval_labels_var.get().strip(),
@@ -140,6 +142,10 @@ class RadioCmCutterGui:
         Label(mode_row, text="実行モード", width=18, anchor=W).pack(side=LEFT)
         Radiobutton(mode_row, text="検出だけ", variable=self.mode_var, value=MODE_DETECT_ONLY).pack(side=LEFT, padx=(0, 12))
         Radiobutton(mode_row, text="検出してカット", variable=self.mode_var, value=MODE_DETECT_AND_CUT).pack(side=LEFT)
+
+        option_row = Frame(self.tab_run)
+        option_row.pack(fill="x", padx=12, pady=(0, 4))
+        Checkbutton(option_row, text="完了後にレポートを自動で開く", variable=self.auto_open_report_var, command=self._save_settings).pack(side=LEFT)
 
         action = Frame(self.tab_run)
         action.pack(fill="x", padx=12, pady=8)
@@ -454,11 +460,11 @@ class RadioCmCutterGui:
             self._maybe_enable_report_button(detect_result.output_dir)
             if mode == MODE_DETECT_ONLY:
                 self._enqueue_log("run", f"完了(検出のみ): success={detect_result.success}, failed={detect_result.failed}, segments={detect_result.total_segments}, total_cm_sec={detect_result.total_cm_sec:.1f}")
-                self.root.after(0, self._open_report)
+                self._auto_open_report_if_enabled(detect_result.output_dir)
                 return
             if not self._confirm_cut(detect_result.total_segments, detect_result.total_cm_sec):
                 self._enqueue_log("run", "カットはキャンセルされました（検出結果のみ保存）。")
-                self.root.after(0, self._open_report)
+                self._auto_open_report_if_enabled(detect_result.output_dir)
                 return
             cut_result = process_folder_api(
                 folder=self.input_var.get().strip(),
@@ -473,6 +479,7 @@ class RadioCmCutterGui:
             self.last_output_dir = cut_result.output_dir
             self._maybe_enable_report_button(cut_result.output_dir)
             self._enqueue_log("run", f"完了(検出+カット): success={cut_result.success}, failed={cut_result.failed}, output={cut_result.output_dir}")
+            self._auto_open_report_if_enabled(cut_result.output_dir)
         except Exception as exc:
             self._handle_error(exc, "run")
         finally:
@@ -590,6 +597,12 @@ class RadioCmCutterGui:
         report_path = output_dir / "ml_report.html"
         if report_path.exists():
             self.root.after(0, lambda: self.open_report_btn.configure(state="normal"))
+
+    def _auto_open_report_if_enabled(self, output_dir: Path) -> None:
+        if not self.auto_open_report_var.get():
+            return
+        self.last_output_dir = output_dir
+        self.root.after(0, self._open_report)
 
     def _friendly_error(self, exc: Exception) -> str:
         raw = str(exc)
