@@ -5,13 +5,28 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import sys
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .cli import EvaluateResult, ProcessFolderResult, _process_folder_impl, cmd_train, evaluate_impl
+from .cli import (
+    EvaluateResult,
+    ProcessFolderResult,
+    Segment,
+    _detect_with_fallback,
+    _process_folder_impl,
+    _resolve_model_path,
+    cmd_train,
+    complement_segments,
+    cut_mp3,
+    decode_to_wav,
+    evaluate_impl,
+    ffprobe_duration,
+    read_wav_pcm16,
+)
 
 LogCallback = Callable[[str], None]
 
@@ -128,3 +143,67 @@ def evaluate_api(
     out_writer.flush()
     err_writer.flush()
     return result
+
+
+def detect_one_api(
+    audio_path: str,
+    model_path: str | None = None,
+    config_path: str = "config.json",
+    ffmpeg_path: str | None = None,
+    log_callback: LogCallback | None = None,
+) -> tuple[list[tuple[float, float]], float, str]:
+    """Detect CM segments from one audio file and return (segments, duration_sec, mode)."""
+    ensure_ffmpeg_on_path(ffmpeg_path)
+
+    input_path = Path(audio_path).expanduser().resolve()
+    if not input_path.exists():
+        raise FileNotFoundError(f"Audio not found: {input_path}")
+
+    cfg_path = Path(config_path).expanduser().resolve()
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    model = _resolve_model_path(argparse.Namespace(model=model_path), cfg)
+
+    cache_dir = Path.cwd() / ".cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = cache_dir / f"review_{input_path.stem}_{abs(hash(str(input_path))) % 1000000}_16k_mono.wav"
+    decode_to_wav(input_path, wav_path, int(cfg["sample_rate"]))
+    x = read_wav_pcm16(wav_path)
+    sr = int(cfg["sample_rate"])
+    duration = x.size / sr
+    segments, mode, *_ = _detect_with_fallback(x, cfg, model)
+    if log_callback:
+        log_callback(f"検出モード: {mode} / 区間数: {len(segments)}")
+    return [(float(s.start), float(s.end)) for s in segments], float(duration), mode
+
+
+def cut_one_api(
+    audio_path: str,
+    segments: list[tuple[float, float]],
+    out_path: str,
+    config_path: str = "config.json",
+    ffmpeg_path: str | None = None,
+    keep_parts: bool = False,
+) -> Path:
+    """Cut one audio file with explicit CM segments and return output path."""
+    ensure_ffmpeg_on_path(ffmpeg_path)
+
+    cfg_path = Path(config_path).expanduser().resolve()
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    input_path = Path(audio_path).expanduser().resolve()
+    output_path = Path(out_path).expanduser().resolve()
+
+    if input_path == output_path:
+        raise ValueError("Output path must differ from input path")
+
+    cm_segments = [Segment(float(s), float(e), 0.0) for s, e in segments if float(e) > float(s)]
+    duration = ffprobe_duration(input_path)
+    keep = complement_segments(duration, cm_segments)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cut_mp3(
+        input_path=input_path,
+        keep_segments=keep,
+        out_path=output_path,
+        q=int(cfg.get("mp3_quality_q", 2)),
+        keep_parts=keep_parts,
+    )
+    return output_path
