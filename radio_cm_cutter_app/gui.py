@@ -13,12 +13,13 @@ import urllib.error
 import urllib.request
 import webbrowser
 import zipfile
+from datetime import datetime
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, W, BooleanVar, Button, Checkbutton, Entry, Frame, Label, Radiobutton, StringVar, Tk, Toplevel, filedialog, messagebox
+from tkinter import BOTH, END, LEFT, RIGHT, W, X, BooleanVar, Button, Canvas, Checkbutton, Entry, Frame, Label, Radiobutton, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
-from radio_cm_cutter.api import default_output_dir, evaluate_api, process_folder_api, train_api
+from radio_cm_cutter.api import cut_one_api, default_output_dir, detect_one_api, evaluate_api, process_folder_api, train_api
 from radio_cm_cutter_app.diagnostics import collect_diagnostics, export_diagnostic_zip
 from radio_cm_cutter_app.support import (
     APP_NAME,
@@ -158,6 +159,8 @@ class RadioCmCutterGui:
         self.run_btn.pack(side=LEFT)
         self.open_report_btn = Button(action, text="ml_report.html を開く", state="disabled", command=self._open_report)
         self.open_report_btn.pack(side=LEFT, padx=8)
+        self.review_btn = Button(action, text="レビュー/編集…", command=self._open_review_editor)
+        self.review_btn.pack(side=LEFT, padx=8)
         self.diag_btn = Button(action, text="診断", command=self._open_diagnostics_dialog)
         self.diag_btn.pack(side=LEFT, padx=8)
         self.open_logs_btn = Button(action, text="ログを開く", command=self._open_logs_folder)
@@ -425,6 +428,7 @@ class RadioCmCutterGui:
         self.running = running
         st = "disabled" if running else "normal"
         self.run_btn.configure(state=st)
+        self.review_btn.configure(state=st)
         self.train_btn.configure(state=st)
         self.eval_btn.configure(state=st)
 
@@ -620,6 +624,31 @@ class RadioCmCutterGui:
             return f"原因: 権限エラーです ({raw})\n次の行動: 書き込み可能な保存先を選択してください。"
         return f"原因: {raw}\n次の行動: ログを確認し、設定を見直して再実行してください。"
 
+    def _open_review_editor(self) -> None:
+        if self.running:
+            return
+        ok, searched, _ = self._resolve_ffmpeg_state()
+        if not ok:
+            selected = self.ffmpeg_var.get().strip()
+            reason = "前回指定された ffmpeg パスが見つかりませんでした。" if selected else None
+            if not self._show_ffmpeg_missing_dialog(searched, reason=reason):
+                return
+        path = filedialog.askopenfilename(
+            title="レビュー対象MP3を選択",
+            filetypes=[("MP3", "*.mp3"), ("All", "*.*")],
+            initialdir=self.input_var.get().strip() or str(Path.cwd()),
+        )
+        if not path:
+            return
+        SegmentReviewDialog(
+            owner=self,
+            audio_path=Path(path).expanduser().resolve(),
+            model_path=Path(self.model_var.get().strip()).expanduser().resolve() if self.model_var.get().strip() else None,
+            output_dir=Path(self.output_var.get().strip() or default_output_dir()).expanduser().resolve(),
+            config_path=self.config_path.resolve(),
+            ffmpeg_path=self.ffmpeg_var.get().strip() or None,
+        )
+
     def _open_report(self) -> None:
         if not self.last_output_dir:
             return
@@ -661,6 +690,323 @@ class RadioCmCutterGui:
 
         Button(bar, text="診断レポートzipを出力", command=do_export).pack(side=LEFT)
 
+
+
+class SegmentReviewDialog:
+    CANVAS_W = 860
+    CANVAS_H = 90
+
+    def __init__(
+        self,
+        owner: RadioCmCutterGui,
+        audio_path: Path,
+        model_path: Path | None,
+        output_dir: Path,
+        config_path: Path,
+        ffmpeg_path: str | None,
+    ) -> None:
+        self.owner = owner
+        self.audio_path = audio_path
+        self.model_path = model_path
+        self.output_dir = output_dir
+        self.config_path = config_path
+        self.ffmpeg_path = ffmpeg_path
+        self.duration_sec = 0.0
+        self.mode = ""
+        self.segments: list[tuple[float, float]] = []
+        self.selected_index: int | None = None
+        self.drag_start_x: float | None = None
+        self.drag_current_x: float | None = None
+        self.ffplay_proc: subprocess.Popen | None = None
+
+        self.win = Toplevel(owner.root)
+        self.win.title("レビュー＆ラベリング（1ファイル）")
+        self.win.geometry("980x760")
+        self.win.transient(owner.root)
+        self.win.grab_set()
+        self.win.protocol("WM_DELETE_WINDOW", self._close)
+
+        self.start_var = StringVar(value="0.0")
+        self.end_var = StringVar(value="0.0")
+
+        self._build()
+        self._detect_segments()
+
+    def _build(self) -> None:
+        Label(self.win, text=f"入力MP3: {self.audio_path}", justify="left", anchor="w").pack(fill=X, padx=12, pady=(12, 6))
+
+        action = Frame(self.win)
+        action.pack(fill=X, padx=12, pady=(0, 8))
+        Button(action, text="再検出", command=self._detect_segments).pack(side=LEFT)
+        Button(action, text="選択区間を再生", command=self._play_selected).pack(side=LEFT, padx=6)
+        Button(action, text="開始前後2秒を再生", command=lambda: self._play_context(True)).pack(side=LEFT, padx=6)
+        Button(action, text="終了前後2秒を再生", command=lambda: self._play_context(False)).pack(side=LEFT, padx=6)
+        Button(action, text="停止", command=self._stop_playback).pack(side=LEFT, padx=6)
+        Button(action, text="確定", command=self._confirm).pack(side=RIGHT)
+        Button(action, text="キャンセル", command=self._close).pack(side=RIGHT, padx=6)
+
+        self.timeline = Canvas(self.win, width=self.CANVAS_W, height=self.CANVAS_H, bg="#f3f3f3", highlightthickness=1, highlightbackground="#bdbdbd")
+        self.timeline.pack(fill=X, padx=12, pady=8)
+        self.timeline.bind("<ButtonPress-1>", self._on_drag_start)
+        self.timeline.bind("<B1-Motion>", self._on_drag_move)
+        self.timeline.bind("<ButtonRelease-1>", self._on_drag_release)
+
+        list_frame = Frame(self.win)
+        list_frame.pack(fill=BOTH, expand=True, padx=12, pady=6)
+        cols = ("start", "end", "dur")
+        self.segment_table = ttk.Treeview(list_frame, columns=cols, show="headings", height=12)
+        self.segment_table.heading("start", text="start")
+        self.segment_table.heading("end", text="end")
+        self.segment_table.heading("dur", text="dur")
+        self.segment_table.column("start", width=120, anchor="w")
+        self.segment_table.column("end", width=120, anchor="w")
+        self.segment_table.column("dur", width=120, anchor="w")
+        self.segment_table.pack(side=LEFT, fill=BOTH, expand=True)
+        self.segment_table.bind("<<TreeviewSelect>>", self._on_select_segment)
+
+        list_ops = Frame(list_frame)
+        list_ops.pack(side=LEFT, fill="y", padx=8)
+        Button(list_ops, text="削除", width=10, command=self._delete_selected).pack(pady=2)
+        Button(list_ops, text="上へ", width=10, command=lambda: self._move_selected(-1)).pack(pady=2)
+        Button(list_ops, text="下へ", width=10, command=lambda: self._move_selected(1)).pack(pady=2)
+
+        edit = Frame(self.win)
+        edit.pack(fill=X, padx=12, pady=(4, 12))
+        Label(edit, text="start(sec)").pack(side=LEFT)
+        Entry(edit, width=10, textvariable=self.start_var).pack(side=LEFT, padx=(4, 10))
+        Label(edit, text="end(sec)").pack(side=LEFT)
+        Entry(edit, width=10, textvariable=self.end_var).pack(side=LEFT, padx=(4, 10))
+        Button(edit, text="適用", command=self._apply_edit).pack(side=LEFT)
+        Button(edit, text="ドラッグ範囲を追加", command=self._add_drag_selection).pack(side=LEFT, padx=8)
+
+    def _detect_segments(self) -> None:
+        segments, duration, mode = detect_one_api(
+            audio_path=str(self.audio_path),
+            model_path=str(self.model_path) if self.model_path else None,
+            config_path=str(self.config_path),
+            ffmpeg_path=self.ffmpeg_path,
+            log_callback=lambda m: self.owner._enqueue_log("run", f"[review] {m}"),
+        )
+        self.duration_sec = duration
+        self.mode = mode
+        self.segments = [self._normalize_segment(s, e) for s, e in segments if e > s]
+        self.selected_index = 0 if self.segments else None
+        self._refresh_table()
+        self._draw_timeline()
+
+    def _refresh_table(self) -> None:
+        for iid in self.segment_table.get_children():
+            self.segment_table.delete(iid)
+        for i, (start, end) in enumerate(self.segments):
+            self.segment_table.insert("", END, iid=str(i), values=(self._sec_text(start), self._sec_text(end), self._sec_text(end - start)))
+        if self.selected_index is not None and 0 <= self.selected_index < len(self.segments):
+            iid = str(self.selected_index)
+            self.segment_table.selection_set(iid)
+            self.segment_table.see(iid)
+            s, e = self.segments[self.selected_index]
+            self.start_var.set(f"{s:.1f}")
+            self.end_var.set(f"{e:.1f}")
+
+    def _draw_timeline(self) -> None:
+        self.timeline.delete("all")
+        margin = 10
+        top, bottom = 20, 70
+        self.timeline.create_rectangle(margin, top, self.CANVAS_W - margin, bottom, fill="#ddd", outline="#aaa")
+
+        for idx, (start, end) in enumerate(self.segments):
+            x1 = self._sec_to_x(start)
+            x2 = self._sec_to_x(end)
+            fill = "#ff7f7f" if idx == self.selected_index else "#ffb3b3"
+            self.timeline.create_rectangle(x1, top, x2, bottom, fill=fill, outline="#aa5555")
+
+        if self.drag_start_x is not None and self.drag_current_x is not None:
+            x1 = min(self.drag_start_x, self.drag_current_x)
+            x2 = max(self.drag_start_x, self.drag_current_x)
+            self.timeline.create_rectangle(x1, top, x2, bottom, fill="#88c0ff", stipple="gray25", outline="#3366aa")
+
+        self.timeline.create_text(10, 8, text="0:00", anchor="w")
+        self.timeline.create_text(self.CANVAS_W - 10, 8, text=self._sec_text(self.duration_sec), anchor="e")
+
+    def _on_select_segment(self, _event=None) -> None:
+        selected = self.segment_table.selection()
+        if not selected:
+            return
+        self.selected_index = int(selected[0])
+        self._refresh_table()
+        self._draw_timeline()
+
+    def _on_drag_start(self, event) -> None:
+        self.drag_start_x = min(max(10, event.x), self.CANVAS_W - 10)
+        self.drag_current_x = self.drag_start_x
+        self._draw_timeline()
+
+    def _on_drag_move(self, event) -> None:
+        if self.drag_start_x is None:
+            return
+        self.drag_current_x = min(max(10, event.x), self.CANVAS_W - 10)
+        self._draw_timeline()
+
+    def _on_drag_release(self, event) -> None:
+        if self.drag_start_x is None:
+            return
+        self.drag_current_x = min(max(10, event.x), self.CANVAS_W - 10)
+        start = self._x_to_sec(min(self.drag_start_x, self.drag_current_x))
+        end = self._x_to_sec(max(self.drag_start_x, self.drag_current_x))
+        self.start_var.set(f"{start:.1f}")
+        self.end_var.set(f"{end:.1f}")
+        self._draw_timeline()
+
+    def _add_drag_selection(self) -> None:
+        start = self._to_snap(float(self.start_var.get() or 0))
+        end = self._to_snap(float(self.end_var.get() or 0))
+        if end <= start:
+            messagebox.showwarning("入力エラー", "start < end になる値を入力してください。", parent=self.win)
+            return
+        self.segments.append(self._normalize_segment(start, end))
+        self.segments.sort(key=lambda x: x[0])
+        self.selected_index = len(self.segments) - 1
+        self._refresh_table()
+        self._draw_timeline()
+
+    def _apply_edit(self) -> None:
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.segments)):
+            messagebox.showinfo("情報", "先に区間を選択してください。", parent=self.win)
+            return
+        try:
+            start = self._to_snap(float(self.start_var.get()))
+            end = self._to_snap(float(self.end_var.get()))
+        except ValueError:
+            messagebox.showwarning("入力エラー", "数値を入力してください。", parent=self.win)
+            return
+        if end <= start:
+            messagebox.showwarning("入力エラー", "start < end になる値を入力してください。", parent=self.win)
+            return
+        self.segments[self.selected_index] = self._normalize_segment(start, end)
+        self.segments.sort(key=lambda x: x[0])
+        self._refresh_table()
+        self._draw_timeline()
+
+    def _delete_selected(self) -> None:
+        if self.selected_index is None or not self.segments:
+            return
+        self.segments.pop(self.selected_index)
+        if not self.segments:
+            self.selected_index = None
+        else:
+            self.selected_index = min(self.selected_index, len(self.segments) - 1)
+        self._refresh_table()
+        self._draw_timeline()
+
+    def _move_selected(self, delta: int) -> None:
+        if self.selected_index is None:
+            return
+        src = self.selected_index
+        dst = src + delta
+        if not (0 <= dst < len(self.segments)):
+            return
+        self.segments[src], self.segments[dst] = self.segments[dst], self.segments[src]
+        self.selected_index = dst
+        self._refresh_table()
+        self._draw_timeline()
+
+    def _play_selected(self) -> None:
+        if self.selected_index is None or not self.segments:
+            return
+        s, e = self.segments[self.selected_index]
+        self._play_range(s, e)
+
+    def _play_context(self, is_start: bool) -> None:
+        if self.selected_index is None or not self.segments:
+            return
+        s, e = self.segments[self.selected_index]
+        if is_start:
+            self._play_range(max(0.0, s - 2.0), min(self.duration_sec, s + 2.0))
+        else:
+            self._play_range(max(0.0, e - 2.0), min(self.duration_sec, e + 2.0))
+
+    def _play_range(self, start: float, end: float) -> None:
+        self._stop_playback()
+        dur = max(0.1, end - start)
+        cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", str(self.audio_path)]
+        self.ffplay_proc = subprocess.Popen(cmd)
+
+    def _stop_playback(self) -> None:
+        if self.ffplay_proc and self.ffplay_proc.poll() is None:
+            self.ffplay_proc.terminate()
+            try:
+                self.ffplay_proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                self.ffplay_proc.kill()
+        self.ffplay_proc = None
+
+    def _confirm(self) -> None:
+        if not self.segments:
+            if not messagebox.askyesno("確認", "区間が0件です。このまま保存しますか？", parent=self.win):
+                return
+        target_dir = filedialog.askdirectory(title="カットMP3の保存先", initialdir=str(self.output_dir), parent=self.win)
+        if not target_dir:
+            return
+
+        base = self.audio_path.stem
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_root = Path(target_dir).expanduser().resolve() / f"review_{ts}"
+        out_root.mkdir(parents=True, exist_ok=True)
+        out_mp3 = out_root / f"{base}_cut.mp3"
+        if out_mp3.resolve() == self.audio_path.resolve():
+            messagebox.showerror("エラー", "元ファイルを上書きできません。", parent=self.win)
+            return
+
+        seg_pairs = [(float(s), float(e)) for s, e in self.segments]
+        cut_path = cut_one_api(
+            audio_path=str(self.audio_path),
+            segments=seg_pairs,
+            out_path=str(out_mp3),
+            config_path=str(self.config_path),
+            ffmpeg_path=self.ffmpeg_path,
+        )
+        self._save_session(out_root)
+        self.owner._enqueue_log("run", f"[review] カット保存: {cut_path}")
+        messagebox.showinfo("完了", f"保存しました:\n{cut_path}", parent=self.win)
+        self._close()
+
+    def _save_session(self, out_root: Path) -> None:
+        session_dir = out_root / "sessions"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "audio_path": str(self.audio_path),
+            "segments": [{"start": round(s, 3), "end": round(e, 3)} for s, e in self.segments],
+            "created_at": datetime.now().isoformat(),
+            "app_version": "gui-review-v1",
+            "detect_mode": self.mode,
+        }
+        (session_dir / f"{self.audio_path.stem}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _close(self) -> None:
+        self._stop_playback()
+        self.win.grab_release()
+        self.win.destroy()
+
+    def _to_snap(self, sec: float) -> float:
+        return round(max(0.0, min(self.duration_sec, sec)), 1)
+
+    def _normalize_segment(self, start: float, end: float) -> tuple[float, float]:
+        s = self._to_snap(start)
+        e = self._to_snap(end)
+        return (s, max(s + 0.1, e))
+
+    def _sec_to_x(self, sec: float) -> float:
+        ratio = 0.0 if self.duration_sec <= 0 else sec / self.duration_sec
+        return 10 + (self.CANVAS_W - 20) * ratio
+
+    def _x_to_sec(self, x: float) -> float:
+        ratio = (x - 10) / (self.CANVAS_W - 20)
+        return self._to_snap(ratio * self.duration_sec)
+
+    def _sec_text(self, sec: float) -> str:
+        total = max(0.0, float(sec))
+        mm = int(total // 60)
+        ss = total - mm * 60
+        return f"{mm:02d}:{ss:04.1f}"
 
 def main() -> None:
     root = Tk()
