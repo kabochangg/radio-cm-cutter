@@ -20,6 +20,11 @@ from radio_cm_cutter_app.state import load_config, save_config
 class SegmentReviewDialog:
     CANVAS_W = 860
     CANVAS_H = 90
+    TIMELINE_LEFT = 10
+    TIMELINE_RIGHT = CANVAS_W - 10
+    BAR_TOP = 30
+    BAR_BOTTOM = 60
+    HANDLE_HIT_PX = 8
 
     def __init__(self, owner, audio_path: Path, model_path: Path | None, output_dir: Path, config_path: Path, ffmpeg_path: str | None) -> None:
         self.owner = owner
@@ -34,6 +39,9 @@ class SegmentReviewDialog:
         self.selected_index: int | None = None
         self.drag_start_x: float | None = None
         self.drag_current_x: float | None = None
+        self.drag_mode: str | None = None
+        self.drag_segment_index: int | None = None
+        self.drag_shift_pressed = False
         self.player = FFPlayPlayer(audio_path)
 
         cfg = load_config(config_path)
@@ -75,6 +83,8 @@ class SegmentReviewDialog:
         action.pack(fill=X, padx=12, pady=(0, 8))
         Button(action, text="このファイルで再検出プレビュー", command=self._redetect_preview).pack(side=LEFT)
         Button(action, text="選択区間を再生", command=self._play_selected).pack(side=LEFT, padx=6)
+        Button(action, text="Start付近を再生(-2s〜+2s)", command=self._play_start_preview).pack(side=LEFT, padx=6)
+        Button(action, text="End付近を再生(-2s〜+2s)", command=self._play_end_preview).pack(side=LEFT, padx=6)
         Button(action, text="停止", command=self.player.stop).pack(side=LEFT, padx=6)
         Button(action, text="確定（保存→train→evaluate→更新）", command=self._confirm).pack(side=RIGHT)
         Button(action, text="キャンセル", command=self._close).pack(side=RIGHT, padx=6)
@@ -128,6 +138,7 @@ class SegmentReviewDialog:
         self.segments = [(round(s, 1), round(e, 1)) for s, e in segments if e > s]
         self.selected_index = 0 if self.segments else None
         self._refresh_table()
+        self._update_entry_from_selection()
         self._draw_timeline()
 
     def _confirm(self) -> None:
@@ -190,65 +201,146 @@ class SegmentReviewDialog:
             self.segment_table.delete(iid)
         for i, (s, e) in enumerate(self.segments):
             self.segment_table.insert("", END, iid=str(i), values=(f"{s:.1f}", f"{e:.1f}", f"{(e-s):.1f}"))
+        if self.selected_index is not None and 0 <= self.selected_index < len(self.segments):
+            self.segment_table.selection_set(str(self.selected_index))
+            self.segment_table.see(str(self.selected_index))
 
     def _draw_timeline(self) -> None:
         self.timeline.delete("all")
-        self.timeline.create_rectangle(10, 30, self.CANVAS_W - 10, 60, fill="#ddd", outline="#aaa")
+        self.timeline.create_rectangle(self.TIMELINE_LEFT, self.BAR_TOP, self.TIMELINE_RIGHT, self.BAR_BOTTOM, fill="#ddd", outline="#aaa")
         for idx, (s, e) in enumerate(self.segments):
             x1 = self._sec_to_x(s)
             x2 = self._sec_to_x(e)
-            color = "#f39c12" if idx == self.selected_index else "#3498db"
-            self.timeline.create_rectangle(x1, 30, x2, 60, fill=color, outline="")
+            is_selected = idx == self.selected_index
+            color = "#f39c12" if is_selected else "#3498db"
+            outline = "#d35400" if is_selected else ""
+            self.timeline.create_rectangle(x1, self.BAR_TOP, x2, self.BAR_BOTTOM, fill=color, outline=outline, width=2 if is_selected else 1)
+            handle_color = "#e74c3c" if is_selected else "#1f618d"
+            self.timeline.create_rectangle(x1 - 3, self.BAR_TOP, x1 + 3, self.BAR_BOTTOM, fill=handle_color, outline="")
+            self.timeline.create_rectangle(x2 - 3, self.BAR_TOP, x2 + 3, self.BAR_BOTTOM, fill=handle_color, outline="")
+
+        if self.drag_mode == "new" and self.drag_start_x is not None and self.drag_current_x is not None:
+            x1 = min(self.drag_start_x, self.drag_current_x)
+            x2 = max(self.drag_start_x, self.drag_current_x)
+            self.timeline.create_rectangle(x1, self.BAR_TOP, x2, self.BAR_BOTTOM, fill="#9b59b6", stipple="gray50", outline="#8e44ad")
 
     def _on_select_segment(self, _e) -> None:
         cur = self.segment_table.selection()
         if not cur:
             return
-        self.selected_index = int(cur[0])
-        s, e = self.segments[self.selected_index]
-        self.start_var.set(f"{s:.1f}")
-        self.end_var.set(f"{e:.1f}")
-        self._draw_timeline()
+        self._select_segment(int(cur[0]))
 
     def _on_drag_start(self, event) -> None:
-        self.drag_start_x = min(max(10, event.x), self.CANVAS_W - 10)
+        x = self._clamp_x(event.x)
+        self.drag_start_x = x
+        self.drag_current_x = x
+        self.drag_shift_pressed = self._is_shift_pressed(event)
+        hit = self._hit_test_segment(x, event.y)
+        if hit is None:
+            self.drag_mode = "new"
+            self.drag_segment_index = None
+            return
+
+        idx, part = hit
+        self.drag_segment_index = idx
+        self._select_segment(idx)
+        if part == "left":
+            self.drag_mode = "move_start"
+        elif part == "right":
+            self.drag_mode = "move_end"
+        else:
+            self.drag_mode = "select"
 
     def _on_drag_move(self, event) -> None:
-        self.drag_current_x = min(max(10, event.x), self.CANVAS_W - 10)
+        if self.drag_mode is None:
+            return
+        self.drag_shift_pressed = self._is_shift_pressed(event)
+        self.drag_current_x = self._clamp_x(event.x)
+
+        if self.drag_mode == "new":
+            self._draw_timeline()
+            return
+        if self.drag_mode not in {"move_start", "move_end"} or self.drag_segment_index is None:
+            return
+
+        idx = self.drag_segment_index
+        s, e = self.segments[idx]
+        dragged = self._snap_sec(self._x_to_sec(self.drag_current_x), self.drag_shift_pressed)
+        min_len = self._min_len_sec()
+        if self.drag_mode == "move_start":
+            s = min(dragged, e - min_len)
+        else:
+            e = max(dragged, s + min_len)
+        s, e = self._clamp_segment(s, e, min_len)
+        self.segments[idx] = (s, e)
+        self._refresh_table()
+        self._update_entry_from_selection()
+        self._draw_timeline()
 
     def _on_drag_release(self, event) -> None:
-        self.drag_current_x = min(max(10, event.x), self.CANVAS_W - 10)
-        if self.drag_start_x is None:
+        self.drag_current_x = self._clamp_x(event.x)
+        if self.drag_start_x is None or self.drag_mode is None:
             return
-        start = self._x_to_sec(min(self.drag_start_x, self.drag_current_x))
-        end = self._x_to_sec(max(self.drag_start_x, self.drag_current_x))
-        self.start_var.set(f"{start:.1f}")
-        self.end_var.set(f"{end:.1f}")
+
+        if self.drag_mode == "new":
+            start = self._snap_sec(self._x_to_sec(min(self.drag_start_x, self.drag_current_x)), self.drag_shift_pressed)
+            end = self._snap_sec(self._x_to_sec(max(self.drag_start_x, self.drag_current_x)), self.drag_shift_pressed)
+            start, end = self._clamp_segment(start, end, self._min_len_sec())
+            self.start_var.set(f"{start:.1f}")
+            self.end_var.set(f"{end:.1f}")
+        elif self.drag_mode in {"move_start", "move_end"}:
+            self._refresh_table()
+            self._update_entry_from_selection()
+
+        self.drag_mode = None
+        self.drag_segment_index = None
+        self.drag_start_x = None
+        self.drag_current_x = None
+        self._draw_timeline()
 
     def _add_drag_selection(self) -> None:
-        s, e = float(self.start_var.get()), float(self.end_var.get())
-        if e <= s:
+        s, e = self._safe_segment_from_entry()
+        if s is None or e is None:
             return
-        self.segments.append((round(s, 1), round(e, 1)))
+        s, e = self._clamp_segment(s, e, self._min_len_sec())
+        self.segments.append((s, e))
         self.segments.sort(key=lambda x: x[0])
+        self.selected_index = self.segments.index((s, e))
         self._refresh_table()
+        self._update_entry_from_selection()
         self._draw_timeline()
 
     def _apply_edit(self) -> None:
         if self.selected_index is None:
             return
-        s, e = float(self.start_var.get()), float(self.end_var.get())
-        if e <= s:
+        s, e = self._safe_segment_from_entry()
+        if s is None or e is None:
             return
-        self.segments[self.selected_index] = (round(s, 1), round(e, 1))
+        self.segments[self.selected_index] = self._clamp_segment(s, e, self._min_len_sec())
         self._refresh_table()
+        self._update_entry_from_selection()
         self._draw_timeline()
 
     def _play_selected(self) -> None:
         if self.selected_index is None or not self.segments:
+            messagebox.showinfo("再生", "区間を選択してください", parent=self.win)
             return
         s, e = self.segments[self.selected_index]
         self.player.play_range(s, e)
+
+    def _play_start_preview(self) -> None:
+        if self.selected_index is None or not self.segments:
+            messagebox.showinfo("再生", "区間を選択してください", parent=self.win)
+            return
+        s, _e = self.segments[self.selected_index]
+        self.player.play_preview_around(s, radius=2.0)
+
+    def _play_end_preview(self) -> None:
+        if self.selected_index is None or not self.segments:
+            messagebox.showinfo("再生", "区間を選択してください", parent=self.win)
+            return
+        _s, e = self.segments[self.selected_index]
+        self.player.play_preview_around(e, radius=2.0)
 
     def _close(self) -> None:
         self.player.stop()
@@ -257,8 +349,80 @@ class SegmentReviewDialog:
 
     def _sec_to_x(self, sec: float) -> float:
         ratio = 0.0 if self.duration_sec <= 0 else sec / self.duration_sec
-        return 10 + (self.CANVAS_W - 20) * ratio
+        return self.TIMELINE_LEFT + (self.CANVAS_W - 20) * ratio
 
     def _x_to_sec(self, x: float) -> float:
-        ratio = (x - 10) / (self.CANVAS_W - 20)
+        ratio = (x - self.TIMELINE_LEFT) / (self.CANVAS_W - 20)
         return max(0.0, min(self.duration_sec, ratio * self.duration_sec))
+
+    def _select_segment(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self.segments):
+            return
+        self.selected_index = idx
+        self._update_entry_from_selection()
+        self._refresh_table()
+        self._draw_timeline()
+
+    def _update_entry_from_selection(self) -> None:
+        if self.selected_index is None or self.selected_index >= len(self.segments):
+            return
+        s, e = self.segments[self.selected_index]
+        self.start_var.set(f"{s:.1f}")
+        self.end_var.set(f"{e:.1f}")
+
+    def _clamp_x(self, x: float) -> float:
+        return min(max(self.TIMELINE_LEFT, x), self.TIMELINE_RIGHT)
+
+    def _hit_test_segment(self, x: float, y: float) -> tuple[int, str] | None:
+        if y < self.BAR_TOP - self.HANDLE_HIT_PX or y > self.BAR_BOTTOM + self.HANDLE_HIT_PX:
+            return None
+        for idx in range(len(self.segments) - 1, -1, -1):
+            s, e = self.segments[idx]
+            x1 = self._sec_to_x(s)
+            x2 = self._sec_to_x(e)
+            if abs(x - x1) <= self.HANDLE_HIT_PX:
+                return idx, "left"
+            if abs(x - x2) <= self.HANDLE_HIT_PX:
+                return idx, "right"
+            if x1 <= x <= x2:
+                return idx, "body"
+        return None
+
+    def _is_shift_pressed(self, event) -> bool:
+        return bool(event.state & 0x0001)
+
+    def _snap_sec(self, sec: float, shift_pressed: bool) -> float:
+        step = 0.5 if shift_pressed else 0.1
+        return round(sec / step) * step
+
+    def _min_len_sec(self) -> float:
+        try:
+            return max(0.1, float(self.min_len_var.get()))
+        except ValueError:
+            return 0.1
+
+    def _clamp_segment(self, start: float, end: float, min_len: float) -> tuple[float, float]:
+        start = max(0.0, min(self.duration_sec, start))
+        end = max(0.0, min(self.duration_sec, end))
+        if end - start < min_len:
+            if start + min_len <= self.duration_sec:
+                end = start + min_len
+            else:
+                start = max(0.0, self.duration_sec - min_len)
+                end = self.duration_sec
+        start = max(0.0, min(self.duration_sec, start))
+        end = max(0.0, min(self.duration_sec, end))
+        snapped_start = self._snap_sec(start, False)
+        snapped_end = self._snap_sec(end, False)
+        if snapped_end - snapped_start < min_len:
+            snapped_end = min(self.duration_sec, snapped_start + min_len)
+            if snapped_end - snapped_start < min_len:
+                snapped_start = max(0.0, snapped_end - min_len)
+        return (round(snapped_start, 1), round(snapped_end, 1))
+
+    def _safe_segment_from_entry(self) -> tuple[float | None, float | None]:
+        try:
+            return float(self.start_var.get()), float(self.end_var.get())
+        except ValueError:
+            messagebox.showwarning("入力エラー", "start/end は数値で入力してください", parent=self.win)
+            return None, None

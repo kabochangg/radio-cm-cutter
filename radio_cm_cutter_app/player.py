@@ -22,6 +22,26 @@ class FFPlayPlayer:
             f"{start:.3f}",
             "-t",
             f"{dur:.3f}",
+            "-i",
+            str(self.audio_path),
+        ]
+        self.proc = subprocess.Popen(cmd)
+
+    def play_preview_around(self, sec: float, radius: float = 2.0) -> None:
+        self.stop()
+        start = max(0.0, sec - radius)
+        dur = max(0.1, radius * 2.0)
+        cmd = [
+            "ffplay",
+            "-nodisp",
+            "-autoexit",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{start:.3f}",
+            "-t",
+            f"{dur:.3f}",
+            "-i",
             str(self.audio_path),
         ]
         self.proc = subprocess.Popen(cmd)
