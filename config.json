@@ -2,19 +2,17 @@
   "sample_rate": 16000,
   "window_sec": 0.5,
   "hop_sec": 0.25,
-
   "baseline_window_sec": 150,
   "start_delta_db": 1.5,
   "end_delta_db": 1.0,
-  "min_cm_sec": 8,
+  "min_cm_sec": 8.0,
   "merge_gap_sec": 4.0,
   "pad_sec": 0.2,
-
   "min_score": 2.5,
-
   "model_path": "model/model.pkl",
   "ml_start_prob": 0.55,
-  "ml_end_prob": 0.50,
-
-  "mp3_quality_q": 2
+  "ml_end_prob": 0.5,
+  "mp3_quality_q": 2,
+  "pad_pre_sec": 0.2,
+  "pad_post_sec": 0.2
 }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import queue
 from datetime import datetime
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Button, Canvas, Entry, Frame, Label, StringVar, Toplevel, filedialog, messagebox
@@ -16,6 +18,20 @@ from radio_cm_cutter.api import (
 from radio_cm_cutter_app.player import FFPlayPlayer
 from radio_cm_cutter_app.state import load_config, save_config
 
+
+
+def _detect_one_in_subprocess(
+    audio_path: str,
+    model_path: str | None,
+    config_path: str,
+    ffmpeg_path: str | None,
+    out_queue,
+) -> None:
+    try:
+        result = detect_one_api(audio_path, model_path, config_path, ffmpeg_path)
+        out_queue.put(("ok", result))
+    except Exception as exc:
+        out_queue.put(("error", str(exc)))
 
 class SegmentReviewDialog:
     CANVAS_W = 860
@@ -43,6 +59,17 @@ class SegmentReviewDialog:
         self.drag_segment_index: int | None = None
         self.drag_shift_pressed = False
         self.player = FFPlayPlayer(audio_path)
+        self.detecting = False
+        self._closed = False
+        self._detect_seq = 0
+        self.status_var = StringVar(value="準備中...")
+        self.redetect_btn: Button | None = None
+        self.confirm_btn: Button | None = None
+        self.apply_btn: Button | None = None
+        self.add_drag_btn: Button | None = None
+        self._table_updating = False
+        self._detect_process = None
+        self._detect_queue = None
 
         cfg = load_config(config_path)
         self.start_th_var = StringVar(value=str(cfg.get("ml_start_prob", 0.55)))
@@ -62,7 +89,7 @@ class SegmentReviewDialog:
         self.win.grab_set()
         self.win.protocol("WM_DELETE_WINDOW", self._close)
         self._build()
-        self._detect_segments()
+        self._start_detect_segments()
 
     def _build(self) -> None:
         Label(self.win, text=f"入力MP3: {self.audio_path}", justify="left", anchor="w").pack(fill=X, padx=12, pady=(12, 6))
@@ -81,12 +108,14 @@ class SegmentReviewDialog:
 
         action = Frame(self.win)
         action.pack(fill=X, padx=12, pady=(0, 8))
-        Button(action, text="このファイルで再検出プレビュー", command=self._redetect_preview).pack(side=LEFT)
+        self.redetect_btn = Button(action, text="このファイルで再検出プレビュー", command=self._redetect_preview)
+        self.redetect_btn.pack(side=LEFT)
         Button(action, text="選択区間を再生", command=self._play_selected).pack(side=LEFT, padx=6)
         Button(action, text="Start付近を再生(-2s〜+2s)", command=self._play_start_preview).pack(side=LEFT, padx=6)
         Button(action, text="End付近を再生(-2s〜+2s)", command=self._play_end_preview).pack(side=LEFT, padx=6)
         Button(action, text="停止", command=self.player.stop).pack(side=LEFT, padx=6)
-        Button(action, text="確定（保存→train→evaluate→更新）", command=self._confirm).pack(side=RIGHT)
+        self.confirm_btn = Button(action, text="確定（保存→train→evaluate→更新）", command=self._confirm)
+        self.confirm_btn.pack(side=RIGHT)
         Button(action, text="キャンセル", command=self._close).pack(side=RIGHT, padx=6)
 
         self.timeline = Canvas(self.win, width=self.CANVAS_W, height=self.CANVAS_H, bg="#f3f3f3", highlightthickness=1, highlightbackground="#bdbdbd")
@@ -110,8 +139,11 @@ class SegmentReviewDialog:
         Entry(edit, width=10, textvariable=self.start_var).pack(side=LEFT, padx=(4, 10))
         Label(edit, text="end(sec)").pack(side=LEFT)
         Entry(edit, width=10, textvariable=self.end_var).pack(side=LEFT, padx=(4, 10))
-        Button(edit, text="適用", command=self._apply_edit).pack(side=LEFT)
-        Button(edit, text="ドラッグ範囲を追加", command=self._add_drag_selection).pack(side=LEFT, padx=8)
+        self.apply_btn = Button(edit, text="適用", command=self._apply_edit)
+        self.apply_btn.pack(side=LEFT)
+        self.add_drag_btn = Button(edit, text="ドラッグ範囲を追加", command=self._add_drag_selection)
+        self.add_drag_btn.pack(side=LEFT, padx=8)
+        Label(self.win, textvariable=self.status_var, anchor="w").pack(fill=X, padx=12, pady=(0, 10))
 
     def _updated_config(self) -> dict:
         cfg = load_config(self.config_path)
@@ -128,11 +160,141 @@ class SegmentReviewDialog:
         return cfg
 
     def _redetect_preview(self) -> None:
-        self._updated_config()
-        self._detect_segments()
+        if not self._update_config_from_inputs():
+            return
+        self._start_detect_segments()
 
-    def _detect_segments(self) -> None:
-        segments, duration, mode = detect_one_api(str(self.audio_path), str(self.model_path) if self.model_path else None, str(self.config_path), self.ffmpeg_path)
+    def _update_config_from_inputs(self) -> bool:
+        try:
+            self._updated_config()
+        except ValueError:
+            messagebox.showwarning("入力エラー", "threshold/min_len/pad は数値で入力してください", parent=self.win)
+            return False
+        return True
+
+    def _set_detecting(self, detecting: bool, status: str | None = None) -> None:
+        self.detecting = detecting
+        if status is not None:
+            self.status_var.set(status)
+        state = "disabled" if detecting else "normal"
+        for btn in (self.redetect_btn, self.confirm_btn, self.apply_btn, self.add_drag_btn):
+            if btn is not None:
+                btn.configure(state=state)
+
+    def _cleanup_detect_worker(self, terminate: bool = False) -> None:
+        proc = self._detect_process
+        q = self._detect_queue
+        self._detect_process = None
+        self._detect_queue = None
+
+        if proc is not None:
+            try:
+                if terminate and proc.is_alive():
+                    proc.terminate()
+                proc.join(timeout=0.5)
+            except Exception:
+                pass
+
+        if q is not None:
+            try:
+                q.close()
+            except Exception:
+                pass
+
+    def _start_detect_segments(self) -> None:
+        if self.detecting or self._closed:
+            return
+
+        self._cleanup_detect_worker(terminate=True)
+        self._detect_seq += 1
+        seq = self._detect_seq
+        self._set_detecting(True, "再検出中...しばらくお待ちください")
+        self.owner._enqueue_log("run", f"[review] detect start: {self.audio_path.name}")
+
+        try:
+            ctx = mp.get_context("spawn")
+            q = ctx.Queue()
+            proc = ctx.Process(
+                target=_detect_one_in_subprocess,
+                args=(
+                    str(self.audio_path),
+                    str(self.model_path) if self.model_path else None,
+                    str(self.config_path),
+                    self.ffmpeg_path,
+                    q,
+                ),
+                daemon=True,
+            )
+            proc.start()
+            self._detect_queue = q
+            self._detect_process = proc
+        except Exception as exc:
+            self._cleanup_detect_worker(terminate=True)
+            self._on_detect_finished(seq, None, exc)
+            return
+
+        self.win.after(120, lambda: self._poll_detect_result(seq))
+
+    def _poll_detect_result(self, seq: int) -> None:
+        if self._closed or seq != self._detect_seq:
+            return
+
+        proc = self._detect_process
+        q = self._detect_queue
+        if proc is None or q is None:
+            self._on_detect_finished(seq, None, RuntimeError("検出プロセスの初期化に失敗しました"))
+            return
+
+        payload = None
+        try:
+            payload = q.get_nowait()
+        except queue.Empty:
+            payload = None
+        except Exception as exc:
+            self._cleanup_detect_worker(terminate=True)
+            self._on_detect_finished(seq, None, exc)
+            return
+
+        if payload is None:
+            if proc.is_alive():
+                self.win.after(120, lambda: self._poll_detect_result(seq))
+                return
+            self._cleanup_detect_worker(terminate=False)
+            self._on_detect_finished(seq, None, RuntimeError("検出プロセスが結果を返さず終了しました"))
+            return
+
+        self._cleanup_detect_worker(terminate=False)
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            self._on_detect_finished(seq, None, RuntimeError("検出結果の形式が不正です"))
+            return
+
+        status, data = payload
+        if status == "ok":
+            self._on_detect_finished(seq, data, None)
+        else:
+            self._on_detect_finished(seq, None, RuntimeError(str(data)))
+
+    def _on_detect_finished(
+        self,
+        seq: int,
+        result: tuple[list[tuple[float, float]], float, str] | None,
+        error: Exception | None,
+    ) -> None:
+        if self._closed or seq != self._detect_seq:
+            return
+
+        if error is not None:
+            self._set_detecting(False, "再検出に失敗しました")
+            self.owner._enqueue_log("run", f"[review] detect failed: {error}")
+            messagebox.showerror("検出エラー", f"再検出に失敗しました:\n{error}", parent=self.win)
+            return
+
+        if result is None:
+            self._set_detecting(False, "再検出に失敗しました")
+            messagebox.showerror("検出エラー", "再検出結果を取得できませんでした", parent=self.win)
+            return
+
+        segments, duration, mode = result
         self.duration_sec = duration
         self.mode = mode
         self.segments = [(round(s, 1), round(e, 1)) for s, e in segments if e > s]
@@ -140,9 +302,15 @@ class SegmentReviewDialog:
         self._refresh_table()
         self._update_entry_from_selection()
         self._draw_timeline()
+        self._set_detecting(False, f"検出完了: mode={self.mode} / 区間={len(self.segments)}")
+        self.owner._enqueue_log("run", f"[review] detect done: mode={self.mode}, segments={len(self.segments)}")
 
     def _confirm(self) -> None:
-        self._updated_config()
+        if self.detecting:
+            messagebox.showinfo("処理中", "再検出中です。完了後に実行してください", parent=self.win)
+            return
+        if not self._update_config_from_inputs():
+            return
         target_dir = filedialog.askdirectory(title="カットMP3の保存先", initialdir=str(self.output_dir), parent=self.win)
         if not target_dir:
             return
@@ -197,13 +365,17 @@ class SegmentReviewDialog:
         (session_dir / f"{self.audio_path.stem}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _refresh_table(self) -> None:
-        for iid in self.segment_table.get_children():
-            self.segment_table.delete(iid)
-        for i, (s, e) in enumerate(self.segments):
-            self.segment_table.insert("", END, iid=str(i), values=(f"{s:.1f}", f"{e:.1f}", f"{(e-s):.1f}"))
-        if self.selected_index is not None and 0 <= self.selected_index < len(self.segments):
-            self.segment_table.selection_set(str(self.selected_index))
-            self.segment_table.see(str(self.selected_index))
+        self._table_updating = True
+        try:
+            for iid in self.segment_table.get_children():
+                self.segment_table.delete(iid)
+            for i, (s, e) in enumerate(self.segments):
+                self.segment_table.insert("", END, iid=str(i), values=(f"{s:.1f}", f"{e:.1f}", f"{(e-s):.1f}"))
+            if self.selected_index is not None and 0 <= self.selected_index < len(self.segments):
+                self.segment_table.selection_set(str(self.selected_index))
+                self.segment_table.see(str(self.selected_index))
+        finally:
+            self._table_updating = False
 
     def _draw_timeline(self) -> None:
         self.timeline.delete("all")
@@ -225,12 +397,20 @@ class SegmentReviewDialog:
             self.timeline.create_rectangle(x1, self.BAR_TOP, x2, self.BAR_BOTTOM, fill="#9b59b6", stipple="gray50", outline="#8e44ad")
 
     def _on_select_segment(self, _e) -> None:
+        if self._table_updating:
+            return
         cur = self.segment_table.selection()
         if not cur:
             return
-        self._select_segment(int(cur[0]))
+        try:
+            idx = int(cur[0])
+        except ValueError:
+            return
+        self._select_segment(idx)
 
     def _on_drag_start(self, event) -> None:
+        if self.detecting:
+            return
         x = self._clamp_x(event.x)
         self.drag_start_x = x
         self.drag_current_x = x
@@ -299,6 +479,8 @@ class SegmentReviewDialog:
         self._draw_timeline()
 
     def _add_drag_selection(self) -> None:
+        if self.detecting:
+            return
         s, e = self._safe_segment_from_entry()
         if s is None or e is None:
             return
@@ -311,6 +493,8 @@ class SegmentReviewDialog:
         self._draw_timeline()
 
     def _apply_edit(self) -> None:
+        if self.detecting:
+            return
         if self.selected_index is None:
             return
         s, e = self._safe_segment_from_entry()
@@ -343,9 +527,17 @@ class SegmentReviewDialog:
         self.player.play_preview_around(e, radius=2.0)
 
     def _close(self) -> None:
+        self._closed = True
+        self._cleanup_detect_worker(terminate=True)
         self.player.stop()
-        self.win.grab_release()
-        self.win.destroy()
+        try:
+            self.win.grab_release()
+        except Exception:
+            pass
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
 
     def _sec_to_x(self, sec: float) -> float:
         ratio = 0.0 if self.duration_sec <= 0 else sec / self.duration_sec
@@ -359,8 +551,13 @@ class SegmentReviewDialog:
         if idx < 0 or idx >= len(self.segments):
             return
         self.selected_index = idx
+        self._table_updating = True
+        try:
+            self.segment_table.selection_set(str(idx))
+            self.segment_table.see(str(idx))
+        finally:
+            self._table_updating = False
         self._update_entry_from_selection()
-        self._refresh_table()
         self._draw_timeline()
 
     def _update_entry_from_selection(self) -> None:
