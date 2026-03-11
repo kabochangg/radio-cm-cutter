@@ -168,7 +168,8 @@ def detect_one_api(
 
     cache_dir = Path.cwd() / ".cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    wav_path = cache_dir / f"review_{input_path.stem}_{abs(hash(str(input_path))) % 1000000}_16k_mono.wav"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    wav_path = cache_dir / f"review_{input_path.stem}_{ts}_16k_mono.wav"
     decode_to_wav(input_path, wav_path, int(cfg["sample_rate"]))
     x = read_wav_pcm16(wav_path)
     sr = int(cfg["sample_rate"])

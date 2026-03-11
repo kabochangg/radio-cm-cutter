@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
 from datetime import datetime
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Button, Canvas, Entry, Frame, Label, StringVar, Toplevel, filedialog, messagebox
@@ -43,6 +45,12 @@ class SegmentReviewDialog:
         self.drag_segment_index: int | None = None
         self.drag_shift_pressed = False
         self.player = FFPlayPlayer(audio_path)
+        self._detect_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._detect_cancel_event = threading.Event()
+        self._detect_thread: threading.Thread | None = None
+        self._detect_running = False
+        self._closed = False
+        self._control_buttons: list[Button] = []
 
         cfg = load_config(config_path)
         self.start_th_var = StringVar(value=str(cfg.get("ml_start_prob", 0.55)))
@@ -62,7 +70,8 @@ class SegmentReviewDialog:
         self.win.grab_set()
         self.win.protocol("WM_DELETE_WINDOW", self._close)
         self._build()
-        self._detect_segments()
+        self._set_detecting_state(True, "読み込み中… 検出を実行しています")
+        self.win.after(50, self._start_detect_worker)
 
     def _build(self) -> None:
         Label(self.win, text=f"入力MP3: {self.audio_path}", justify="left", anchor="w").pack(fill=X, padx=12, pady=(12, 6))
@@ -81,13 +90,20 @@ class SegmentReviewDialog:
 
         action = Frame(self.win)
         action.pack(fill=X, padx=12, pady=(0, 8))
-        Button(action, text="このファイルで再検出プレビュー", command=self._redetect_preview).pack(side=LEFT)
-        Button(action, text="選択区間を再生", command=self._play_selected).pack(side=LEFT, padx=6)
-        Button(action, text="Start付近を再生(-2s〜+2s)", command=self._play_start_preview).pack(side=LEFT, padx=6)
-        Button(action, text="End付近を再生(-2s〜+2s)", command=self._play_end_preview).pack(side=LEFT, padx=6)
-        Button(action, text="停止", command=self.player.stop).pack(side=LEFT, padx=6)
-        Button(action, text="確定（保存→train→evaluate→更新）", command=self._confirm).pack(side=RIGHT)
-        Button(action, text="キャンセル", command=self._close).pack(side=RIGHT, padx=6)
+        self.redetect_btn = Button(action, text="このファイルで再検出プレビュー", command=self._redetect_preview)
+        self.redetect_btn.pack(side=LEFT)
+        self.play_btn = Button(action, text="選択区間を再生", command=self._play_selected)
+        self.play_btn.pack(side=LEFT, padx=6)
+        self.play_start_btn = Button(action, text="Start付近を再生(-2s〜+2s)", command=self._play_start_preview)
+        self.play_start_btn.pack(side=LEFT, padx=6)
+        self.play_end_btn = Button(action, text="End付近を再生(-2s〜+2s)", command=self._play_end_preview)
+        self.play_end_btn.pack(side=LEFT, padx=6)
+        self.stop_btn = Button(action, text="停止", command=self.player.stop)
+        self.stop_btn.pack(side=LEFT, padx=6)
+        self.confirm_btn = Button(action, text="確定（保存→train→evaluate→更新）", command=self._confirm)
+        self.confirm_btn.pack(side=RIGHT)
+        self.cancel_btn = Button(action, text="キャンセル", command=self._cancel_or_close)
+        self.cancel_btn.pack(side=RIGHT, padx=6)
 
         self.timeline = Canvas(self.win, width=self.CANVAS_W, height=self.CANVAS_H, bg="#f3f3f3", highlightthickness=1, highlightbackground="#bdbdbd")
         self.timeline.pack(fill=X, padx=12, pady=8)
@@ -110,8 +126,24 @@ class SegmentReviewDialog:
         Entry(edit, width=10, textvariable=self.start_var).pack(side=LEFT, padx=(4, 10))
         Label(edit, text="end(sec)").pack(side=LEFT)
         Entry(edit, width=10, textvariable=self.end_var).pack(side=LEFT, padx=(4, 10))
-        Button(edit, text="適用", command=self._apply_edit).pack(side=LEFT)
-        Button(edit, text="ドラッグ範囲を追加", command=self._add_drag_selection).pack(side=LEFT, padx=8)
+        self.apply_btn = Button(edit, text="適用", command=self._apply_edit)
+        self.apply_btn.pack(side=LEFT)
+        self.add_btn = Button(edit, text="ドラッグ範囲を追加", command=self._add_drag_selection)
+        self.add_btn.pack(side=LEFT, padx=8)
+
+        self.loading_var = StringVar(value="")
+        Label(self.win, textvariable=self.loading_var, fg="#666", anchor="w", justify="left").pack(fill=X, padx=12, pady=(0, 8))
+
+        self._control_buttons = [
+            self.redetect_btn,
+            self.play_btn,
+            self.play_start_btn,
+            self.play_end_btn,
+            self.stop_btn,
+            self.confirm_btn,
+            self.apply_btn,
+            self.add_btn,
+        ]
 
     def _updated_config(self) -> dict:
         cfg = load_config(self.config_path)
@@ -128,11 +160,13 @@ class SegmentReviewDialog:
         return cfg
 
     def _redetect_preview(self) -> None:
+        if self._detect_running:
+            return
         self._updated_config()
-        self._detect_segments()
+        self._set_detecting_state(True, "再検出中…")
+        self.win.after(0, self._start_detect_worker)
 
-    def _detect_segments(self) -> None:
-        segments, duration, mode = detect_one_api(str(self.audio_path), str(self.model_path) if self.model_path else None, str(self.config_path), self.ffmpeg_path)
+    def _apply_detect_result(self, segments: list[tuple[float, float]], duration: float, mode: str) -> None:
         self.duration_sec = duration
         self.mode = mode
         self.segments = [(round(s, 1), round(e, 1)) for s, e in segments if e > s]
@@ -140,6 +174,84 @@ class SegmentReviewDialog:
         self._refresh_table()
         self._update_entry_from_selection()
         self._draw_timeline()
+
+    def _start_detect_worker(self) -> None:
+        if self._closed or self._detect_running:
+            return
+        self._detect_cancel_event.clear()
+        self._detect_running = True
+        self._detect_thread = threading.Thread(target=self._detect_segments_worker, daemon=True)
+        self._detect_thread.start()
+        self.win.after(100, self._poll_detect_queue)
+
+    def _detect_segments_worker(self) -> None:
+        if self._detect_cancel_event.is_set():
+            self._detect_queue.put(("cancelled", None))
+            return
+        try:
+            segments, duration, mode = detect_one_api(
+                str(self.audio_path),
+                str(self.model_path) if self.model_path else None,
+                str(self.config_path),
+                self.ffmpeg_path,
+                log_callback=lambda m: self._detect_queue.put(("log", m)),
+            )
+            if self._detect_cancel_event.is_set():
+                self._detect_queue.put(("cancelled", None))
+                return
+            self._detect_queue.put(("result", (segments, duration, mode)))
+        except Exception as exc:
+            self._detect_queue.put(("error", exc))
+        finally:
+            self._detect_queue.put(("done", None))
+
+    def _poll_detect_queue(self) -> None:
+        if self._closed:
+            return
+        while True:
+            try:
+                msg_type, payload = self._detect_queue.get_nowait()
+            except queue.Empty:
+                break
+            if msg_type == "log":
+                self.owner._enqueue_log("run", f"[review] {payload}")
+            elif msg_type == "result":
+                segments, duration, mode = payload
+                self._apply_detect_result(segments, duration, mode)
+            elif msg_type == "cancelled":
+                self.owner._enqueue_log("run", "[review] 検出をキャンセルしました。")
+            elif msg_type == "error":
+                self._show_detect_error(payload)
+            elif msg_type == "done":
+                self._detect_running = False
+                self._set_detecting_state(False, "")
+
+        if self._detect_running:
+            self.win.after(100, self._poll_detect_queue)
+
+    def _show_detect_error(self, exc: Exception) -> None:
+        msg = str(exc)
+        err_tail = self._extract_stderr_tail(msg)
+        if err_tail:
+            self.owner._enqueue_log("run", "[review] ffmpegエラー(末尾):\n" + err_tail)
+        guidance = "次の行動: ffmpegパス / 入力ファイルの存在 / 出力先の権限を確認してください。"
+        self.owner._enqueue_log("run", f"[review] 検出失敗: {exc}\n{guidance}")
+        messagebox.showerror("検出エラー", f"検出に失敗しました。\n{guidance}", parent=self.win)
+
+    def _extract_stderr_tail(self, error_text: str, lines: int = 8) -> str:
+        marker = "STDERR:\n"
+        idx = error_text.find(marker)
+        if idx < 0:
+            return ""
+        stderr_text = error_text[idx + len(marker):].strip()
+        tail = stderr_text.splitlines()[-lines:]
+        return "\n".join(tail)
+
+    def _set_detecting_state(self, detecting: bool, message: str) -> None:
+        state = "disabled" if detecting else "normal"
+        for btn in self._control_buttons:
+            btn.configure(state=state)
+        self.loading_var.set(message)
 
     def _confirm(self) -> None:
         self._updated_config()
@@ -343,9 +455,19 @@ class SegmentReviewDialog:
         self.player.play_preview_around(e, radius=2.0)
 
     def _close(self) -> None:
+        self._closed = True
+        self._detect_cancel_event.set()
         self.player.stop()
-        self.win.grab_release()
-        self.win.destroy()
+        if self.win.winfo_exists():
+            self.win.grab_release()
+            self.win.destroy()
+
+    def _cancel_or_close(self) -> None:
+        if self._detect_running:
+            self._detect_cancel_event.set()
+            self.loading_var.set("キャンセル中…")
+            self.owner._enqueue_log("run", "[review] 検出キャンセルを要求しました。")
+        self._close()
 
     def _sec_to_x(self, sec: float) -> float:
         ratio = 0.0 if self.duration_sec <= 0 else sec / self.duration_sec

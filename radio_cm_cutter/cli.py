@@ -69,16 +69,23 @@ def print_ui_ng(message: str) -> None:
     print(f"[ NG ] {message}")
 
 
-def run(cmd: list[str]) -> None:
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def run(
+    cmd: list[str],
+    timeout: float | None = None,
+    stdout: int | None = subprocess.DEVNULL,
+    stderr: int | None = subprocess.PIPE,
+) -> None:
+    p = subprocess.run(cmd, stdout=stdout, stderr=stderr, text=True, timeout=timeout)
     if p.returncode != 0:
+        err = (p.stderr or "") if stderr == subprocess.PIPE else "<stderr not captured>"
+        out = (p.stdout or "") if stdout == subprocess.PIPE else "<stdout not captured>"
         raise RuntimeError(
             "Command failed:\n"
             + " ".join(cmd)
             + "\n\nSTDOUT:\n"
-            + p.stdout
+            + out
             + "\n\nSTDERR:\n"
-            + p.stderr
+            + err
         )
 
 
@@ -108,6 +115,7 @@ def ffprobe_duration(input_path: Path) -> float:
 def decode_to_wav(input_path: Path, wav_path: Path, sample_rate: int) -> None:
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-nostdin",
         "-y",
         "-i", str(input_path),
         "-ac", "1",
